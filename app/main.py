@@ -1,20 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1 import auth, artwork, blockchain, piracy, admin
-from app.db.database import init_db
-from app.api.v1 import (
-    auth_router,
-    artwork_router,
-    blockchain_router,
-    piracy_router,
-    admin_router
-)
-from app.api.v1 import auth_router, artwork_router
-import ssl
-ssl._create_default_https_context = ssl._create_unverified_context
-app = FastAPI(title="Digital Art DRM Platform",
-              description="Blockchain-based digital rights management for artists")
+from app.api.v1 import router as api_router
+from app.db.database import connect_to_mongo, close_mongo_connection
 
+app = FastAPI()
+
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,41 +14,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Database events
+app.add_event_handler("startup", connect_to_mongo)
+app.add_event_handler("shutdown", close_mongo_connection)
 
-from app.api.v1 import (
-    auth_router,
-    artwork_router,
-    blockchain_router,
-    piracy_router,
-    admin_router
-)
+# Include API router with base prefix
+app.include_router(api_router, prefix="/api/v1")
 
-
-
-
-@app.on_event("startup")
-async def startup_db():
-    await init_db()
-
-app.include_router(auth_router, prefix="/api/v1")
-app.include_router(artwork_router, prefix="/api/v1")
-app.include_router(blockchain_router, prefix="/api/v1") 
-app.include_router(piracy_router, prefix="/api/v1")
-app.include_router(admin_router)  # Note: No prefix since it's defined in the router
-
-@app.get("/config-test")
-async def config_test():
-    return {
-        "db_url": settings.MONGODB_URL,
-        "db_name": settings.DB_NAME
-    }
-@app.get("/")
+@app.get("/", include_in_schema=False)
 async def root():
-    return {
-        "message": "Digital Art DRM Platform",
-        "docs": "/docs",
-        "redoc": "/redoc"
-    }
-
-app.include_router(auth_router, prefix="/api/v1")
-app.include_router(artwork_router, prefix="/api/v1")
+    return {"message": "ART_DRM Backend Service"}

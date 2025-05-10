@@ -1,14 +1,9 @@
-import os
-from pathlib import Path
-from fastapi import UploadFile
+import aiohttp
+import base64
+from app.core.config import settings
 
-async def upload_to_ipfs(file: UploadFile) -> str:
-    # Save to local "uploads" folder
-    upload_dir = Path("uploads")
-    upload_dir.mkdir(exist_ok=True)
-    
-    file_path = upload_dir / file.filename
-    with open(file_path, "wb") as f:
-        f.write(await file.read())
-    
-    return str(file_path)  # Return local path as mock "IPFS hash"
+async def upload_to_ipfs(file):
+    # This is a mock implementation
+    # In a real app, you would use the IPFS API with your API key
+    file_content = await file.read()
+    return f"ipfs_hash_{base64.b64encode(file_content[:10]).decode()}"

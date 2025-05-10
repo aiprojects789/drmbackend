@@ -1,21 +1,19 @@
-@"
 # Python
 venv/
-.env
 __pycache__/
-*.py[cod]
-*.so
-*.egg-info/
-*.egg
-.Python
-
-# Large files
+*.pyc
+*.pyo
 *.pyd
-*.dll
-*.bin
-*.dat
+*.egg-info/
+*.env
 
 # IDE
 .vscode/
 .idea/
-"@ | Out-File -FilePath .gitignore -Encoding utf8
+
+# Sensitive data
+.env
+secrets.json
+
+# Logs
+*.log
