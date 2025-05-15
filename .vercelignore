@@ -1,0 +1,6 @@
+# Example .vercelignore
+.git
+node_modules
+*.log
+dist
+build/cache
