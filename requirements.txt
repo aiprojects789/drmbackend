@@ -16,3 +16,4 @@ pydantic-settings==2.2.1
 python-multipart
 aiohttp==3.8.4
 bcrypt==4.0.1
+mangum==0.19.0
