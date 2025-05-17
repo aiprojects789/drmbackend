@@ -1,6 +1,13 @@
-# Example .vercelignore
-.git
-node_modules
-*.log
-dist
-build/cache
+venv/
+__pycache__/
+*.pyc
+.vscode/
+.env
+.DS_Store
+*.zip
+*.tar
+*.tar.gz
+*.pkl
+*.pt
+*.h5
+node_modules/
