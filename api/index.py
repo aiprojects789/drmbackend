@@ -1,4 +1,5 @@
-# api/index.py
+from app.main import app
+from mangum import Mangum
 
-from app.main import vercel_handler
-
+# Create Mangum handler for Vercel
+handler = Mangum(app)
