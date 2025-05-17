@@ -1,5 +1,5 @@
-from app.main import app
 from mangum import Mangum
+from app.main import app
 
-# Create Mangum handler for Vercel
-handler = Mangum(app)
+# Explicitly expose the handler for Vercel
+handler = Mangum(app, lifespan="off")  # Disable lifespan for ASGI apps
