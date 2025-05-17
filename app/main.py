@@ -25,6 +25,8 @@ app.include_router(api_router, prefix="/api/v1")
 async def root():
     return {"message": "ART_DRM Backend Service"}
 
-
-from mangum import Mangum
-handler = Mangum(app)
+# For Vercel deployment
+def vercel_handler(request):
+    from mangum import Mangum
+    handler = Mangum(app)
+    return handler(request)
