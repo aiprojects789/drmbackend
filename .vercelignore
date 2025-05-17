@@ -1,13 +1,13 @@
 venv/
+*.pkl
+*.pt
+*.h5
 __pycache__/
 *.pyc
 .vscode/
 .env
 .DS_Store
+node_modules/
 *.zip
 *.tar
 *.tar.gz
-*.pkl
-*.pt
-*.h5
-node_modules/
