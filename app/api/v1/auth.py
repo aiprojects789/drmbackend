@@ -20,10 +20,15 @@ from app.core.security import get_password_hash
 router = APIRouter(prefix="/auth", tags=["auth"])
 logger = logging.getLogger(__name__)
 
+from app.db.database import connect_to_mongo  # Ensure it's imported
+
 @router.post("/signup", response_model=UserOut)
 async def signup(user: UserCreate):
     """User registration endpoint"""
     try:
+        # Ensure MongoDB connection is alive (important for Vercel / serverless)
+        await connect_to_mongo()
+
         user_collection = get_user_collection()
 
         if user_collection is None:
@@ -39,7 +44,7 @@ async def signup(user: UserCreate):
                 detail="Email already registered"
             )
 
-        # Prepare user data with all required fields
+        # Prepare user data
         user_data = {
             "_id": str(ObjectId()),
             "email": user.email,
@@ -53,7 +58,7 @@ async def signup(user: UserCreate):
             "wallet_address": None
         }
 
-        # Insert user into MongoDB
+        # Insert user
         await user_collection.insert_one(user_data)
 
         return UserOut(**user_data)

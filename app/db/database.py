@@ -11,24 +11,37 @@ class Database:
 
 db = Database()
 
-async def connect_to_mongo():
-    """Connect to MongoDB only if not already connected"""
-    if db.client is not None and db.db is not None:
-        return  # Already connected
+import asyncio
 
+async def connect_to_mongo():
+    """Reconnect to MongoDB if event loop was closed or db is None"""
     try:
-        db.client = AsyncIOMotorClient(
-            settings.MONGODB_URI,
-            maxPoolSize=50,
-            socketTimeoutMS=30000,
-            connectTimeoutMS=30000,
-            serverSelectionTimeoutMS=5000
-        )
-        await db.client.admin.command('ping')
-        db.db = db.client[settings.DB_NAME]
-        logger.info("Successfully connected to MongoDB")
+        if db.client is None or db.db is None:
+            db.client = AsyncIOMotorClient(
+                settings.MONGODB_URI,
+                maxPoolSize=50,
+                socketTimeoutMS=30000,
+                connectTimeoutMS=30000,
+                serverSelectionTimeoutMS=5000
+            )
+            await db.client.admin.command('ping')
+            db.db = db.client[settings.DB_NAME]
+            logger.info("✅ Connected to MongoDB")
+        else:
+            # check if current loop is still valid
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, lambda: None)
+    except RuntimeError as e:
+        if "closed" in str(e):
+            logger.warning("⚠️ Event loop was closed. Reinitializing MongoDB client.")
+            db.client = None
+            db.db = None
+            await connect_to_mongo()
+        else:
+            logger.error(f"MongoDB error: {e}")
+            raise
     except Exception as e:
-        logger.error(f"MongoDB connection failed: {str(e)}")
+        logger.error(f"MongoDB connection failed: {e}")
         raise RuntimeError("Database connection failed") from e
 
 
