@@ -1,10 +1,16 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import logging
+import traceback
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 
 def create_app() -> FastAPI:
     app = FastAPI(title="ART_DRM Backend")
-    
-    # CORS configuration
+
+    # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -12,23 +18,37 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    
-    # Lazy imports to prevent circular dependencies
+
+    # ✅ Add exception logging middleware
+    @app.middleware("http")
+    async def log_exceptions(request: Request, call_next):
+        try:
+            return await call_next(request)
+        except Exception as e:
+            logging.error(f"Unhandled exception: {e}")
+            traceback.print_exc()
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Internal Server Error"}
+            )
+
+    # Lazy import to avoid circular dependencies
     from app.api.v1 import router as api_router
     from app.db.database import connect_to_mongo, close_mongo_connection
-    
-    # Database events
+
+    # Register DB event handlers
     app.add_event_handler("startup", connect_to_mongo)
     app.add_event_handler("shutdown", close_mongo_connection)
-    
-    # Include routers
+
+    # Register API routes
     app.include_router(api_router, prefix="/api/v1")
-    
+
     @app.get("/", include_in_schema=False)
     async def root():
         return {"message": "ART_DRM Backend Service"}
-    
+
     return app
 
-# Instantiate the application
+
+# Instantiate and expose the app
 app = create_app()

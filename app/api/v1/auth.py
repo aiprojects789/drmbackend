@@ -7,6 +7,7 @@ from app.core.security import (
     create_access_token, 
     get_password_hash, 
     verify_password,
+    decode_token,
     oauth2_scheme
 )
 from app.core.config import settings
@@ -82,12 +83,9 @@ async def forgot_password(email: str):
 @router.post("/reset-password")
 async def reset_password(token: str, new_password: str):
     payload = decode_token(token)
-    if not payload:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid token"
-        )
-    
+    if not payload or "email" not in payload:
+     raise HTTPException(status_code=401, detail="Invalid or expired token.")
+
     email = payload.get("sub")
     if not email:
         raise HTTPException(
@@ -118,11 +116,9 @@ async def update_password(
     token: str = Depends(oauth2_scheme)  # Now using the locally defined scheme
 ):
     payload = decode_token(token)
-    if not payload:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token"
-        )
+    if not payload or "email" not in payload:
+     raise HTTPException(status_code=401, detail="Invalid or expired token.")
+
     
     email = payload.get("sub")
     user_collection = get_user_collection()
