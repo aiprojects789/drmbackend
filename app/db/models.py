@@ -34,6 +34,20 @@ class UserInDB(UserBase):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     wallet_address: Optional[str] = None
 
+class UserOut(BaseModel):
+    id: str = Field(..., alias="_id")
+    email: EmailStr
+    username: str
+    full_name: Optional[str]
+    role: UserRole
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    wallet_address: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class UserUpdate(BaseModel):
     full_name: Optional[str] = Field(None, max_length=100)
     username: Optional[Annotated[str, StringConstraints(

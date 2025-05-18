@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from datetime import datetime, timedelta
 from typing import Annotated
+import logging
 
 from app.core.security import (
     create_access_token, 
@@ -11,70 +12,107 @@ from app.core.security import (
     oauth2_scheme
 )
 from app.core.config import settings
+from bson import ObjectId
+from app.db.models import UserCreate, UserOut, UserRole, Token
 from app.db.database import get_user_collection
-from app.db.models import UserCreate, Token
-from app.db.schemas import UserSchema
+from app.core.security import get_password_hash
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 
-@router.post("/signup", response_model=UserSchema)
+@router.post("/signup", response_model=UserOut)
 async def signup(user: UserCreate):
-    user_collection = get_user_collection()
-    
-    existing_user = await user_collection.find_one({"email": user.email})
-    if existing_user:
+    """User registration endpoint"""
+    try:
+        user_collection = get_user_collection()
+
+        if user_collection is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database not initialized"
+            )
+
+        # Check if user already exists
+        if await user_collection.find_one({"email": user.email}):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
+
+        # Prepare user data with all required fields
+        user_data = {
+            "_id": str(ObjectId()),
+            "email": user.email,
+            "username": user.username,
+            "full_name": user.full_name,
+            "role": user.role,
+            "hashed_password": get_password_hash(user.password),
+            "is_active": True,
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
+            "wallet_address": None
+        }
+
+        # Insert user into MongoDB
+        await user_collection.insert_one(user_data)
+
+        return UserOut(**user_data)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Signup error: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Registration failed"
         )
-    
-    hashed_password = get_password_hash(user.password)
-    
-    user_dict = user.dict()
-    user_dict.update({
-        "hashed_password": hashed_password,
-        "is_active": True,
-        "created_at": datetime.utcnow(),
-        "updated_at": datetime.utcnow(),
-        "wallet_address": None
-    })
-    del user_dict["password"]
-    
-    result = await user_collection.insert_one(user_dict)
-    created_user = await user_collection.find_one({"_id": result.inserted_id})
-    
-    return UserSchema(**created_user)
 
 async def authenticate_user(email: str, password: str):
-    user_collection = get_user_collection()
-    user = await user_collection.find_one({"email": email})
-    if not user:
+    """Authenticate user with email and password"""
+    try:
+        user_collection = get_user_collection()
+        user = await user_collection.find_one({"email": email})
+        
+        if not user or not verify_password(password, user["hashed_password"]):
+            return False
+            
+        return user
+    except Exception as e:
+        logger.error(f"Authentication error: {str(e)}")
         return False
-    if not verify_password(password, user["hashed_password"]):
-        return False
-    return user
 
 @router.post("/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = await authenticate_user(form_data.username, form_data.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
+    """User login endpoint"""
+    try:
+        user = await authenticate_user(form_data.username, form_data.password)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={
+                "sub": user["email"],
+                "user_id": str(user["_id"]),
+                "wallet_address": user.get("wallet_address", "")
+            },
+            expires_delta=access_token_expires
         )
-    
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={
-            "sub": user["email"],
-            "user_id": str(user["_id"]),  # Ensure this matches validation
-            "wallet_address": user.get("wallet_address", "")
-        },
-        expires_delta=access_token_expires
-    )
-    
-    return {"access_token": access_token, "token_type": "bearer"}
+        
+        return {"access_token": access_token, "token_type": "bearer"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Login error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Login failed"
+        )
 
 @router.post("/forgot-password")
 async def forgot_password(email: str):

@@ -1,38 +1,54 @@
-from motor.motor_asyncio import AsyncIOMotorClient
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from app.core.config import settings
 from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Database:
-    client: Optional[AsyncIOMotorClient] = None  # Fixed: Mark as Optional
+    client: Optional[AsyncIOMotorClient] = None
+    db: Optional[AsyncIOMotorDatabase] = None
 
 db = Database()
 
 async def connect_to_mongo():
-    """Connect to MongoDB and initialize the client"""
-    db.client = AsyncIOMotorClient(settings.MONGODB_URI)
-    await db.client.admin.command('ping')  # Test connection
-    print("Connected to MongoDB")
+    """Connect to MongoDB with proper error handling"""
+    try:
+        db.client = AsyncIOMotorClient(
+            settings.MONGODB_URI,
+            maxPoolSize=50,
+            socketTimeoutMS=30000,
+            connectTimeoutMS=30000,
+            serverSelectionTimeoutMS=5000
+        )
+        await db.client.admin.command('ping')
+        db.db = db.client[settings.DB_NAME]
+        logger.info("Successfully connected to MongoDB")
+    except Exception as e:
+        logger.error(f"MongoDB connection failed: {str(e)}")
+        raise RuntimeError("Database connection failed") from e
 
 async def close_mongo_connection():
-    """Close MongoDB connection"""
+    """Close MongoDB connection gracefully"""
     if db.client:
         db.client.close()
-        print("Closed MongoDB connection")
+        logger.info("MongoDB connection closed")
+        db.client = None
+        db.db = None
 
-def get_database():
-    """Get database instance"""
-    if not db.client:
-        raise RuntimeError("MongoDB client not initialized")
-    return db.client[settings.DB_NAME]
+def get_db() -> AsyncIOMotorDatabase:
+    if db.db is None:
+        raise RuntimeError("MongoDB not initialized - call connect_to_mongo() first")
+    return db.db
 
 def get_user_collection():
-    """Get users collection"""
-    return get_database().users  # Better than get_collection()
+    """Get users collection with validation"""
+    return get_db().users
 
 def get_artwork_collection():
-    """Get artworks collection"""
-    return get_database().artworks
+    """Get artworks collection with validation"""
+    return get_db().artworks
 
 def get_wallet_collection():
-    """Get wallets collection"""
-    return get_database().wallets
+    """Get wallets collection with validation"""
+    return get_db().wallets

@@ -3,17 +3,17 @@ from typing import Optional
 from datetime import datetime
 
 
-class UserSchema(BaseModel):
-    email: str
-    username: str
-    full_name: Optional[str] = None
-    role: str
-    is_active: bool
-    wallet_address: Optional[str] = None
-    created_at: datetime
-    updated_at: datetime
+# class UserSchema(BaseModel):
+#     email: str
+#     username: str
+#     full_name: Optional[str] = None
+#     role: str
+#     is_active: bool
+#     wallet_address: Optional[str] = None
+#     created_at: datetime
+#     updated_at: datetime
 
-    model_config = ConfigDict(from_attributes=True)
+#     model_config = ConfigDict(from_attributes=True)
 
 class ArtworkSchema(BaseModel):
     title: str
