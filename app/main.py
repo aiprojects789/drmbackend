@@ -27,6 +27,19 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Middleware to ensure MongoDB connection on every request (Vercel-safe)
+    @app.middleware("http")
+    async def ensure_mongo_connected(request: Request, call_next):
+        try:
+            await connect_to_mongo()
+        except Exception as e:
+            logger.error(f"MongoDB connection error: {str(e)}")
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Service unavailable - database error"}
+            )
+        return await call_next(request)
+
     # Exception Handling Middleware
     @app.middleware("http")
     async def db_exception_handler(request: Request, call_next):
@@ -48,7 +61,7 @@ def create_app() -> FastAPI:
                 content={"detail": "Internal server error"}
             )
 
-    # Register routes and event handlers
+    # Register routes and events
     register_routes_and_events(app)
 
     return app
@@ -56,19 +69,19 @@ def create_app() -> FastAPI:
 def register_routes_and_events(app: FastAPI):
     """Register all routes and event handlers"""
     from app.api.v1 import router as api_router
-    
-    # Database events
+
+    # Database events (useful in dev/local)
     app.add_event_handler("startup", startup_db)
     app.add_event_handler("shutdown", shutdown_db)
-    
+
     # API routes
     app.include_router(api_router, prefix="/api/v1")
-    
-    # Basic routes
+
+    # Root route
     @app.get("/", include_in_schema=False)
     async def root():
         return {"message": "ART_DRM Backend Service"}
-    
+
     @app.get('/favicon.ico', include_in_schema=False)
     async def favicon():
         return FileResponse(
@@ -77,7 +90,7 @@ def register_routes_and_events(app: FastAPI):
         )
 
 async def startup_db():
-    """Initialize database connection"""
+    """Initialize database connection (local/dev use)"""
     try:
         await connect_to_mongo()
     except Exception as e:

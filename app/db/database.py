@@ -12,7 +12,10 @@ class Database:
 db = Database()
 
 async def connect_to_mongo():
-    """Connect to MongoDB with proper error handling"""
+    """Connect to MongoDB only if not already connected"""
+    if db.client is not None and db.db is not None:
+        return  # Already connected
+
     try:
         db.client = AsyncIOMotorClient(
             settings.MONGODB_URI,
@@ -27,6 +30,7 @@ async def connect_to_mongo():
     except Exception as e:
         logger.error(f"MongoDB connection failed: {str(e)}")
         raise RuntimeError("Database connection failed") from e
+
 
 async def close_mongo_connection():
     """Close MongoDB connection gracefully"""
