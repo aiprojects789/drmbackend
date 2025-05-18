@@ -1,6 +1,8 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse
+import os
 import logging
 import traceback
 
@@ -42,6 +44,10 @@ def create_app() -> FastAPI:
 
     # Register API routes
     app.include_router(api_router, prefix="/api/v1")
+
+    @app.get('/favicon.ico', include_in_schema=False)
+    async def favicon():
+        return FileResponse(os.path.join('static', 'favicon.ico'))
 
     @app.get("/", include_in_schema=False)
     async def root():

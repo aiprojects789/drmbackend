@@ -1,7 +1,7 @@
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    MONGODB_URL: str = "mongodb+srv://aiprojects789:IP1NwVwaBM0TosQI@drm.cmnzpag.mongodb.net/"  
+    MONGODB_URI: str = "mongodb+srv://aiprojects789:IP1NwVwaBM0TosQI@drm.cmnzpag.mongodb.net/"  
     DB_NAME: str = "art_drm_local"
     JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
