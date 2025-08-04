@@ -69,3 +69,7 @@ def get_artwork_collection():
 def get_wallet_collection():
     """Get wallets collection with validation"""
     return get_db().wallets
+
+    
+def get_artwork_collection():
+    return db.art_drm_local["artworks"]

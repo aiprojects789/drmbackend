@@ -5,11 +5,11 @@ import logging
 from bson import ObjectId
 
 from app.core.security import (
-    create_access_token,
-    get_password_hash,
+    create_access_token, 
+    get_password_hash, 
     verify_password,
     decode_token,
-    get_current_user
+    oauth2_scheme
 )
 from app.core.config import settings
 from app.db.models import UserCreate, UserOut, Token

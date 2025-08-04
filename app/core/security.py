@@ -36,54 +36,52 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
         algorithm=settings.JWT_ALGORITHM
     )
 
-def decode_token(token: str) -> Optional[dict]:
-    """Decode and verify JWT token"""
+def decode_token(token: str):
     try:
-        # Check if token has three parts (header.payload.signature)
-        if len(token.split('.')) != 3:
-            logger.error(f"Malformed token received: {token}")
-            return None
-            
-        payload = jwt.decode(
-            token,
-            settings.JWT_SECRET_KEY,
-            algorithms=[settings.JWT_ALGORITHM]
-        )
+        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
         return payload
     except JWTError as e:
         logger.error(f"Token decode error: {str(e)}")
         return None
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(http_bearer)) -> dict:
-    """Get current user from bearer token"""
-    if not credentials:
-        logger.error("No credentials provided")
+async def get_current_user(token: str = Depends(http_bearer)):
+    if token is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing authorization header",
-            headers={"WWW-Authenticate": "Bearer"},
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Authorization header missing"
         )
-
-    token = credentials.credentials
-    if not token:
-        logger.error("Empty token provided")
+    
+    try:
+        payload = decode_token(token.credentials)
+        if payload is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid token"
+            )
+        
+        # Add these debug prints
+        print("Token payload:", payload)
+        print("Expected secret:", settings.JWT_SECRET_KEY)
+        print("Expected algorithm:", settings.JWT_ALGORITHM)
+        
+        # Verify required claims
+        required_claims = ["sub", "user_id", "exp"]
+        for claim in required_claims:
+            if claim not in payload:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Missing required claim: {claim}"
+                )
+        
+        return {
+            "sub": payload["sub"],
+            "user_id": payload["user_id"],
+            "wallet_address": payload.get("wallet_address", "")
+        }
+        
+    except JWTError as e:
+        print("JWT Validation error:", str(e))
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token format",
-            headers={"WWW-Authenticate": "Bearer"},
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Token validation failed"
         )
-
-    payload = decode_token(token)
-    if not payload:
-        logger.error(f"Failed to decode token: {token}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    return {
-        "email": payload["sub"],
-        "user_id": payload["user_id"],
-        "wallet_address": payload.get("wallet_address", "")
-    }
