@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from app.core.security import get_current_admin_user  # Optional: Protect routes
 from app.db.database import get_user_collection
 from datetime import datetime, timedelta
 from app.db.database import get_db
@@ -13,11 +12,6 @@ router = APIRouter(
     prefix="/admin"
 )
 
-router = APIRouter(
-    tags=["Admin"],
-    prefix="/admin",
-    # dependencies=[Depends(get_current_admin_user)]  # Uncomment when auth is ready
-)
 
 @router.get("/users")
 async def list_users():

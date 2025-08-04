@@ -9,7 +9,7 @@ from app.core.security import (
     get_password_hash, 
     verify_password,
     decode_token,
-    oauth2_scheme
+    get_current_user
 )
 from app.core.config import settings
 from app.db.models import UserCreate, UserOut, Token
