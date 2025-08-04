@@ -40,112 +40,291 @@ def wei_input(label, default_value=0):
         st.error("Please enter a valid integer value")
         return 0
 
-# Initialize Web3 with better error handling
-try:
-    w3 = Web3(Web3.HTTPProvider('http://127.0.0.1:8545', request_kwargs={'timeout': 60}))
-    if not w3.is_connected():
-        st.error("""
-            ⚠️ Could not connect to Ethereum node. Please ensure:
-            1. Hardhat node is running (npx hardhat node)
-            2. It's running on http://127.0.0.1:8545
-            3. The chainId matches (usually 31337 for Hardhat)
-        """)
-        if st.button("Try to reconnect"):
-            st.experimental_rerun()
+DEMO_MODE = True  # Set to False for real blockchain connection
+
+# --- Mock Data Storage ---
+class MockArtworkSystem:
+    def __init__(self):
+        self.artworks = [
+            {
+                'owner': "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+                'metadata': "ipfs://QmDemoArtwork1",
+                'royalty': 10,
+                'licenses': []
+            }
+        ]
+        self.licenses = []
+        self.accounts = [
+            "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+            "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+        ]
+        
+    def get_current_token_id(self):
+        return len(self.artworks)
+        
+    def register_artwork(self, owner, metadata, royalty):
+        self.artworks.append({
+            'owner': owner,
+            'metadata': metadata,
+            'royalty': royalty,
+            'licenses': []
+        })
+        return len(self.artworks) - 1
+        
+    def get_artwork_info(self, token_id):
+        art = self.artworks[token_id]
+        return (art['owner'], art['metadata'], art['royalty'], len(art['licenses']) > 0)
+
+mock_system = MockArtworkSystem()
+
+# --- Mock Web3 Implementation ---
+# ... (keep all your imports and setup code the same) ...
+
+# --- Mock Web3 Implementation ---
+class MockContractFunction:
+    def __init__(self, callback, estimate_gas=21000):
+        self.callback = callback
+        self.estimate_gas = lambda tx_dict: estimate_gas
+        
+    def call(self, *args, **kwargs):
+        return self.callback(*args, **kwargs)
+        
+    def transact(self, tx_dict):
+        return self.callback()
+
+class MockContract:
+    def __init__(self, contract_type):
+        if contract_type == "registry":
+            # Registry contract functions
+            self.functions = type('', (), {
+                'getCurrentTokenId': lambda *args: MockContractFunction(
+                    lambda *args: mock_system.get_current_token_id()
+                ),
+                'registerArtwork': lambda *args: MockContractFunction(
+                    lambda owner, metadata, royalty: mock_system.register_artwork(owner, metadata, royalty),
+                    estimate_gas=200000
+                ),
+                'getArtworkInfo': lambda *args: MockContractFunction(
+                    lambda token_id: mock_system.get_artwork_info(token_id)
+                ),
+                'ownerOf': lambda *args: MockContractFunction(
+                    lambda token_id: mock_system.artworks[token_id]['owner']
+                )
+            })()
+        else:  # licensing contract
+            self.functions = type('', (), {
+                'grantLicense': lambda *args: MockContractFunction(
+                    lambda token_id, licensee, duration, terms, license_type: mock_system.licenses.append({
+                        'token_id': token_id,
+                        'licensee': licensee,
+                        'duration': duration,
+                        'terms': terms,
+                        'type': license_type
+                    }) or True,
+                    estimate_gas=150000
+                ),
+                'revokeLicense': lambda *args: MockContractFunction(
+                    lambda token_id, licensee: True
+                ),
+                'currentLicensee': lambda *args: MockContractFunction(
+                    lambda token_id: "0x0000000000000000000000000000000000000000"
+                ),
+                'getLicenseCount': lambda *args: MockContractFunction(
+                    lambda token_id: len([l for l in mock_system.licenses if l['token_id'] == token_id])
+                ),
+                'getLicenseDetails': lambda *args: MockContractFunction(
+                    lambda token_id, index: (
+                        mock_system.licenses[index]['licensee'],
+                        int((datetime.now() - timedelta(days=1)).timestamp()),
+                        int((datetime.now() + timedelta(days=30)).timestamp()),
+                        mock_system.licenses[index]['terms'],
+                        ["PERSONAL", "COMMERCIAL", "EXCLUSIVE"].index(mock_system.licenses[index]['type']),
+                        True
+                    )
+                )
+            })()
+    
+    def _create_function(self, callback, estimate_gas=21000):
+        return lambda *args: MockContractFunction(
+            lambda *cb_args: callback(*cb_args),
+            estimate_gas=estimate_gas
+        )
+
+class MockEth:
+    def __init__(self):
+        self.chain_id = 31337
+        
+    def get_balance(self, account):
+        return Web3.to_wei(100, 'ether')
+        
+    def get_transaction_count(self, account):
+        return 0
+        
+    def wait_for_transaction_receipt(self, tx_hash):
+        return {
+            'blockNumber': 1,
+            'gasUsed': 21000,
+            'transactionHash': tx_hash.hex()
+        }
+        
+    @property
+    def accounts(self):
+        return mock_system.accounts
+        
+    def contract(self, address=None, abi=None):
+        if "ArtworkRegistry" in str(abi):
+            return MockContract("registry")
+        else:
+            return MockContract("licensing")
+
+class MockWeb3:
+    def __init__(self):
+        self.eth = MockEth()
+        self.from_wei = Web3.from_wei
+        self.to_wei = Web3.to_wei
+        
+    def is_connected(self):
+        return True
+
+# --- Web3 Initialization ---
+if DEMO_MODE:
+    st.warning("DEMO MODE: Using simulated blockchain")
+    w3 = MockWeb3()
+else:
+    # Your original Web3 connection code
+    try:
+        local_provider = Web3.HTTPProvider('http://127.0.0.1:8545', request_kwargs={'timeout': 60})
+        w3 = Web3(local_provider)
+        # Check connection
+        if not w3.is_connected():
+            # Fall back to Mumbai testnet if local node not available
+            provider_url = os.getenv(
+                'WEB3_PROVIDER_URL',
+                'https://rpc-mumbai.maticvigil.com'  # Free Polygon Mumbai testnet
+            )
+            w3 = Web3(Web3.HTTPProvider(provider_url, request_kwargs={'timeout': 60}))
+            
+            if not w3.is_connected():
+                st.error("""
+                    ⚠️ Could not connect to any Ethereum node. Please ensure:
+                    1. For local development: Hardhat node is running (npx hardhat node)
+                    2. For production: You have internet access to Mumbai testnet
+                    3. The chainId matches your environment
+                """)
+                if st.button("Try to reconnect"):
+                    st.experimental_rerun()
+                st.stop()
+        
+        # Display connection info
+        chain_id = w3.eth.chain_id
+        if chain_id == 31337:
+            st.success("✅ Connected to local Hardhat node (ChainID: 31337)")
+        elif chain_id == 80001:
+            st.success("✅ Connected to Polygon Mumbai testnet (ChainID: 80001)")
+        else:
+            st.warning(f"⚠️ Connected to unknown network (ChainID: {chain_id})")
+            
+    except Exception as e:
+        st.error(f"Connection error: {str(e)}")
         st.stop()
-    st.success(f"✅ Connected to Ethereum node (ChainID: {w3.eth.chain_id})")
-except Exception as e:
-    st.error(f"Connection error: {str(e)}")
-    st.stop()
 
 def load_contracts():
-    # Check if contracts are deployed
-    if not os.path.exists('contract-addresses.json'):
-        st.error("Contracts not deployed yet!")
-        if st.button("🚀 Deploy Contracts Now"):
-            try:
-                with st.spinner("Deploying contracts..."):
-                    # Use the full path to npx
-                    npx_path = os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "npm", "npx.cmd")  # Windows
-                    if not os.path.exists(npx_path):
-                        npx_path = "npx"  # Fallback for other OS
-                    
-                    result = subprocess.run(
-                        [npx_path, "hardhat", "run", "scripts/deploy_all.js", "--network", "localhost"],
-                        cwd=os.getcwd(),  # Run in current working directory
-                        shell=True,       # Needed for Windows
-                        capture_output=True,
-                        text=True
-                    )
-                    
-                    if result.returncode == 0:
-                        st.success("✅ Contracts deployed successfully!")
-                        st.code(result.stdout)
-                        st.experimental_rerun()
-                    else:
-                        st.error(f"Deployment failed:\n{result.stderr}")
-                        st.code(result.stdout)
-            except Exception as e:
-                st.error(f"Deployment error: {str(e)}")
-                st.error("Please ensure:")
-                st.error("1. Hardhat is installed (npm install --save-dev hardhat)")
-                st.error("2. You're running this in your project directory")
-                st.error("3. The hardhat node is running (npx hardhat node)")
-        st.stop()
-
-    # Load contract addresses with version checking
-    try:
-        with open('contract-addresses.json') as f:
-            addresses = json.load(f)
+    if DEMO_MODE:
+        # These ABIs can be empty - just need the contract names
+        registry_abi = '{"contractName":"ArtworkRegistry"}'
+        licensing_abi = '{"contractName":"ArtworkLicensing"}'
         
-        # Verify we're on the correct network
-        if addresses.get('network') != "localhost" and w3.eth.chain_id != 31337:
-            st.error("Contracts not deployed to localhost network")
-            st.stop()
-    except Exception as e:
-        st.error(f"Error loading contract addresses: {str(e)}")
-        st.stop()
-
-    # Load ABIs with caching
-    @st.cache_resource
-    def load_abi(name):
-        try:
-            path = Path(f'./artifacts/contracts/{name}.sol/{name}.json')
-            with open(path) as f:
-                abi = json.load(f)['abi']
-            return abi
-        except Exception as e:
-            st.error(f"Error loading {name} ABI: {str(e)}")
-            st.stop()
-
-    # Initialize contracts with checks
-    try:
-        registry = w3.eth.contract(
-            address=addresses['registry'],
-            abi=load_abi('ArtworkRegistry')
-        )
-        
-        # Verify registry is callable
-        try:
-            token_count = registry.functions.getCurrentTokenId().call()
-            st.sidebar.info(f"Total artworks: {token_count}")
-        except Exception as e:
-            st.error(f"Registry call failed: {str(e)}")
-            st.stop()
-
-        licensing = w3.eth.contract(
-            address=addresses['licensing'],
-            abi=load_abi('ArtworkLicensing')
-        )
-
         return {
-            'registry': registry,
-            'licensing': licensing
+            'registry': w3.eth.contract(abi=registry_abi),
+            'licensing': w3.eth.contract(abi=licensing_abi)
         }
+    else:
+        if not os.path.exists('contract-addresses.json'):
+            st.error("Contracts not deployed yet!")
+            if st.button("🚀 Deploy Contracts Now"):
+                try:
+                    with st.spinner("Deploying contracts..."):
+                        # Use the full path to npx
+                        npx_path = os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "npm", "npx.cmd")  # Windows
+                        if not os.path.exists(npx_path):
+                            npx_path = "npx"  # Fallback for other OS
+                        
+                        result = subprocess.run(
+                            [npx_path, "hardhat", "run", "scripts/deploy_all.js", "--network", "localhost"],
+                            cwd=os.getcwd(),  # Run in current working directory
+                            shell=True,       # Needed for Windows
+                            capture_output=True,
+                            text=True
+                        )
+                        
+                        if result.returncode == 0:
+                            st.success("✅ Contracts deployed successfully!")
+                            st.code(result.stdout)
+                            st.experimental_rerun()
+                        else:
+                            st.error(f"Deployment failed:\n{result.stderr}")
+                            st.code(result.stdout)
+                except Exception as e:
+                    st.error(f"Deployment error: {str(e)}")
+                    st.error("Please ensure:")
+                    st.error("1. Hardhat is installed (npm install --save-dev hardhat)")
+                    st.error("2. You're running this in your project directory")
+                    st.error("3. The hardhat node is running (npx hardhat node)")
+            st.stop()
 
-    except Exception as e:
-        st.error(f"Contract initialization failed: {str(e)}")
-        st.stop()
+        # Load contract addresses with version checking
+        try:
+            with open('contract-addresses.json') as f:
+                addresses = json.load(f)
+            
+            # Verify we're on the correct network
+            if addresses.get('network') != "localhost" and w3.eth.chain_id != 31337:
+                st.error("Contracts not deployed to localhost network")
+                st.stop()
+        except Exception as e:
+            st.error(f"Error loading contract addresses: {str(e)}")
+            st.stop()
+
+        # Load ABIs with caching
+        @st.cache_resource
+        def load_abi(name):
+            try:
+                path = Path(f'./artifacts/contracts/{name}.sol/{name}.json')
+                with open(path) as f:
+                    abi = json.load(f)['abi']
+                return abi
+            except Exception as e:
+                st.error(f"Error loading {name} ABI: {str(e)}")
+                st.stop()
+
+        # Initialize contracts with checks
+        try:
+            registry = w3.eth.contract(
+                address=addresses['registry'],
+                abi=load_abi('ArtworkRegistry')
+            )
+            
+            # Verify registry is callable
+            try:
+                token_count = registry.functions.getCurrentTokenId().call()
+                st.sidebar.info(f"Total artworks: {token_count}")
+            except Exception as e:
+                st.error(f"Registry call failed: {str(e)}")
+                st.stop()
+
+            licensing = w3.eth.contract(
+                address=addresses['licensing'],
+                abi=load_abi('ArtworkLicensing')
+            )
+
+            return {
+                'registry': registry,
+                'licensing': licensing
+            }
+
+        except Exception as e:
+            st.error(f"Contract initialization failed: {str(e)}")
+            st.stop()
 
 def main():
     st.title("🎨 Artwork DRM System")
