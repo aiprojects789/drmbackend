@@ -27,6 +27,9 @@ def format_accounts(accounts):
     return formatted
 
 def account_selector(label, accounts, default_index=0):
+    """
+    Custom account selector that formats account addresses nicely
+    """
     account_options = format_accounts(accounts)
     account_mapping = {option: account for option, account in zip(account_options, accounts)}
     selected_option = st.selectbox(label, options=account_options, index=default_index)
@@ -45,110 +48,219 @@ DEMO_MODE = True  # Set to False for real blockchain connection
 # --- Mock Data Storage ---
 class MockArtworkSystem:
     def __init__(self):
-        self.artworks = [
-            {
-                'owner': "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-                'metadata': "ipfs://QmDemoArtwork1",
-                'royalty': 10,
-                'licenses': []
-            }
-        ]
+        self.artworks = []
+        self.token_count = 0
         self.licenses = []
         self.accounts = [
-            "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-            "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+            "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",  # Owner/creator
+            "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"   # Licensee
         ]
+        self.licensing_contract = None
+        self.license_counter = 0
         
     def get_current_token_id(self):
-        return len(self.artworks)
+        return self.token_count
         
-    def register_artwork(self, owner, metadata, royalty):
+    def register_artwork(self, *args):
+        # Handle all possible calling patterns:
+        # - Direct call (owner, metadata, royalty)
+        # - Web3 call (tx_dict, owner, metadata, royalty)
+        # - Simplified call (metadata, royalty)
+        
+        if len(args) == 2:  # Simplified call (metadata, royalty)
+            metadata, royalty = args
+            owner = "mock_owner"
+        elif len(args) == 3:  # Direct call (owner, metadata, royalty)
+            owner, metadata, royalty = args
+        elif len(args) == 4:  # Web3 call (tx_dict, owner, metadata, royalty)
+            _, owner, metadata, royalty = args
+        else:
+            raise ValueError(f"Unexpected number of arguments: {len(args)}")
+
+        if royalty > 20:
+            raise ValueError("Royalty cannot exceed 20%")
+
+        token_id = self.token_count
         self.artworks.append({
             'owner': owner,
+            'creator': owner,
             'metadata': metadata,
             'royalty': royalty,
-            'licenses': []
+            'isLicensed': False,
+            'tokenURI': metadata
         })
-        return len(self.artworks) - 1
+        self.token_count += 1
+        return token_id
         
     def get_artwork_info(self, token_id):
+        """Handle both direct calls (token_id) and web3 calls (tx_dict, token_id)"""
+        if isinstance(token_id, tuple):  # Handle web3 call pattern
+            _, token_id = token_id  # Extract the actual token_id
+        
+        if token_id >= len(self.artworks):
+            raise ValueError("Nonexistent token")
         art = self.artworks[token_id]
-        return (art['owner'], art['metadata'], art['royalty'], len(art['licenses']) > 0)
+        return (
+            art['creator'],
+            art['metadata'],
+            art['royalty'],
+            art['isLicensed']
+        )
+
+    def owner_of(self, token_id):
+        """Handle both direct and web3 call patterns"""
+        if isinstance(token_id, tuple):  # Handle web3 call pattern
+            _, token_id = token_id
+        if token_id >= len(self.artworks):
+            raise ValueError("Nonexistent token")
+        return self.artworks[token_id]['owner']
+
+    def grant_license(self, *args):
+        # Handle both direct calls (5 args) and web3 calls (6 args)
+        if len(args) == 5:
+            token_id, licensee, duration_days, terms_hash, license_type = args
+        elif len(args) == 6:
+            _, token_id, licensee, duration_days, terms_hash, license_type = args
+        else:
+            raise ValueError(f"Expected 5 or 6 arguments, got {len(args)}")
+        
+        # Ensure artwork exists
+        if token_id >= len(self.artworks):
+            raise ValueError("Artwork does not exist")
+            
+        license_data = {
+            'licenseId': self.license_counter,
+            'tokenId': token_id,
+            'licensee': licensee,
+            'startDate': datetime.now(),
+            'endDate': datetime.now() + timedelta(days=duration_days),
+            'termsHash': terms_hash,
+            'licenseType': license_type,
+            'isActive': True
+        }
+        self.licenses.append(license_data)
+        self.artworks[token_id]['isLicensed'] = True
+        self.license_counter += 1
+        return self.license_counter - 1  # Return the license ID
+
+    def get_license_count(self, token_id):
+        return len([l for l in self.licenses if l['tokenId'] == token_id])
+
+    def get_license_details(self, token_id, index):
+        licenses = [l for l in self.licenses if l['tokenId'] == token_id]
+        if not licenses or index >= len(licenses):
+            raise ValueError("License not found")
+        license = licenses[index]
+        return (
+            license['licensee'],
+            int(license['startDate'].timestamp()),
+            int(license['endDate'].timestamp()),
+            license['termsHash'],
+            license['licenseType'],
+            license['isActive']
+        )
+
+    
+    def revoke_license(self, token_id, licensee):
+        for license_data in self.licenses:
+            if license_data['tokenId'] == token_id and license_data['licensee'] == licensee:
+                license_data['isActive'] = False
+                break
+        
+        # Check if any active licenses remain for this token
+        has_active_license = any(
+            l['tokenId'] == token_id and l['isActive'] 
+            for l in self.licenses
+        )
+        self.artworks[token_id]['isLicensed'] = has_active_license
 
 mock_system = MockArtworkSystem()
 
-# --- Mock Web3 Implementation ---
-# ... (keep all your imports and setup code the same) ...
-
-# --- Mock Web3 Implementation ---
 class MockContractFunction:
-    def __init__(self, callback, estimate_gas=21000):
+    def __init__(self, callback, estimate_gas=200000):  # Set default estimate_gas
         self.callback = callback
-        self.estimate_gas = lambda tx_dict: estimate_gas
+        self.estimate_gas_value = estimate_gas
+        self._args = None
+        self._kwargs = None
+        
+    def estimate_gas(self, tx_dict):
+        return self.estimate_gas_value  # Always return the preset value
+        
+    def __call__(self, *args, **kwargs):
+        self._args = args
+        self._kwargs = kwargs
+        return self
         
     def call(self, *args, **kwargs):
-        return self.callback(*args, **kwargs)
+        # Use latest args/kwargs if provided, otherwise use stored ones
+        final_args = args if args else (self._args if self._args else ())
+        final_kwargs = kwargs if kwargs else (self._kwargs if self._kwargs else {})
+        return self.callback(*final_args, **final_kwargs)
         
     def transact(self, tx_dict):
-        return self.callback()
+        # Generate a mock transaction hash
+        import hashlib
+        import time
+        mock_hash = hashlib.sha256(f"tx_{time.time()}".encode()).hexdigest()
+        
+        # Use stored args and kwargs
+        result = self.callback(*(self._args or ()), **(self._kwargs or {}))
+        
+        # Return a mock transaction hash object
+        class MockTxHash:
+            def __init__(self, hash_str):
+                self.hash_str = hash_str
+            def hex(self):
+                return self.hash_str
+        
+        return MockTxHash(f"0x{mock_hash}")
+    
 
 class MockContract:
     def __init__(self, contract_type):
         if contract_type == "registry":
-            # Registry contract functions
             self.functions = type('', (), {
-                'getCurrentTokenId': lambda *args: MockContractFunction(
-                    lambda *args: mock_system.get_current_token_id()
-                ),
-                'registerArtwork': lambda *args: MockContractFunction(
-                    lambda owner, metadata, royalty: mock_system.register_artwork(owner, metadata, royalty),
+                'registerArtwork': self._create_function(
+                    lambda *args: mock_system.register_artwork(*args),
                     estimate_gas=200000
                 ),
-                'getArtworkInfo': lambda *args: MockContractFunction(
-                    lambda token_id: mock_system.get_artwork_info(token_id)
+                'getCurrentTokenId': self._create_getter(mock_system.get_current_token_id),
+                'getArtworkInfo': self._create_function(
+                    lambda *args: mock_system.get_artwork_info(args)
                 ),
-                'ownerOf': lambda *args: MockContractFunction(
-                    lambda token_id: mock_system.artworks[token_id]['owner']
+                'ownerOf': self._create_function(
+                    lambda *args: mock_system.owner_of(args)
                 )
             })()
-        else:  # licensing contract
+
+        elif contract_type == "licensing":
             self.functions = type('', (), {
-                'grantLicense': lambda *args: MockContractFunction(
-                    lambda token_id, licensee, duration, terms, license_type: mock_system.licenses.append({
-                        'token_id': token_id,
-                        'licensee': licensee,
-                        'duration': duration,
-                        'terms': terms,
-                        'type': license_type
-                    }) or True,
+                'grantLicense': self._create_function(
+                    lambda *args: mock_system.grant_license(*args),
                     estimate_gas=150000
                 ),
-                'revokeLicense': lambda *args: MockContractFunction(
-                    lambda token_id, licensee: True
+                'revokeLicense': self._create_function(
+                    lambda token_id, licensee: mock_system.revoke_license(token_id, licensee),
+                    estimate_gas=50000
                 ),
-                'currentLicensee': lambda *args: MockContractFunction(
-                    lambda token_id: "0x0000000000000000000000000000000000000000"
+                'getLicenseCount': self._create_function(
+                    lambda token_id: len([l for l in mock_system.licenses 
+                                       if l['tokenId'] == token_id])
                 ),
-                'getLicenseCount': lambda *args: MockContractFunction(
-                    lambda token_id: len([l for l in mock_system.licenses if l['token_id'] == token_id])
-                ),
-                'getLicenseDetails': lambda *args: MockContractFunction(
-                    lambda token_id, index: (
-                        mock_system.licenses[index]['licensee'],
-                        int((datetime.now() - timedelta(days=1)).timestamp()),
-                        int((datetime.now() + timedelta(days=30)).timestamp()),
-                        mock_system.licenses[index]['terms'],
-                        ["PERSONAL", "COMMERCIAL", "EXCLUSIVE"].index(mock_system.licenses[index]['type']),
-                        True
-                    )
+                'getLicenseDetails': self._create_function(
+                    lambda token_id, index: mock_system.get_license_details(token_id, index)
                 )
             })()
-    
+
     def _create_function(self, callback, estimate_gas=21000):
-        return lambda *args: MockContractFunction(
-            lambda *cb_args: callback(*cb_args),
-            estimate_gas=estimate_gas
-        )
+        def wrapper(*args, **kwargs):
+            return MockContractFunction(callback, estimate_gas=estimate_gas)(*args, **kwargs)
+        return wrapper
+        
+    def _create_getter(self, callback):
+        def wrapper(*args, **kwargs):
+            return MockContractFunction(lambda: callback())
+        return wrapper
 
 class MockEth:
     def __init__(self):
@@ -164,7 +276,7 @@ class MockEth:
         return {
             'blockNumber': 1,
             'gasUsed': 21000,
-            'transactionHash': tx_hash.hex()
+            'transactionHash': tx_hash.hex() if hasattr(tx_hash, 'hex') else str(tx_hash)
         }
         
     @property
@@ -361,221 +473,348 @@ def main():
     ])
 
     with tab1:
-     st.header("Register New Artwork")
-     with st.form("register_form"):
-        metadata = st.text_input("IPFS Hash", "ipfs://Qm...")
-        royalty = st.slider("Royalty %", 0, 20, 10)
-        
-        if st.form_submit_button("Register"):
-            try:
-                # Get current token count
-                token_count_before = registry.functions.getCurrentTokenId().call()
-                
-                # Create transaction dictionary
-                tx_dict = {
-                    'from': selected_account,
-                    'gas': 300000,
-                    'gasPrice': w3.to_wei('50', 'gwei'),
-                    'nonce': w3.eth.get_transaction_count(selected_account)
-                }
-                
-                # Build function call
-                register_func = registry.functions.registerArtwork(
-                    selected_account,  # owner
-                    metadata,
-                    royalty
-                )
-                
-                # Estimate gas (optional but recommended)
+        st.header("Register New Artwork")
+        with st.form("register_form"):
+            metadata = st.text_input("IPFS Hash", "ipfs://Qm...", help="Enter the IPFS CID of your artwork metadata")
+            royalty = st.slider("Royalty Percentage", 0, 20, 10, help="Percentage creator earns on secondary sales (0-20%)")
+            
+            submit_button = st.form_submit_button("Register Artwork")
+            
+            if submit_button:
                 try:
-                    gas_estimate = register_func.estimate_gas(tx_dict)
-                    tx_dict['gas'] = gas_estimate
-                    st.info(f"Gas estimate: {gas_estimate}")
-                except Exception as e:
-                    st.warning(f"Gas estimation failed, using default: {str(e)}")
-                
-                # Send transaction
-                tx_hash = register_func.transact(tx_dict)
-                receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-                
-                # Verify registration
-                token_count_after = registry.functions.getCurrentTokenId().call()
-                if token_count_after > token_count_before:
-                    new_token_id = token_count_after - 1
-                    st.success(f"✅ Artwork registered! Token ID: {new_token_id}")
-                    st.json({
-                        "Transaction hash": tx_hash.hex(),
-                        "Block number": receipt['blockNumber'],
-                        "Gas used": receipt['gasUsed']
-                    })
-                else:
-                    st.error("Registration failed - token count didn't increase")
+                    # Input validation
+                    if not metadata.startswith("ipfs://"):
+                        st.error("Metadata URI must start with 'ipfs://'")
+                        st.stop()
                     
-            except Exception as e:
-                st.error(f"Registration failed: {type(e).__name__}: {str(e)}")
-                if "reverted" in str(e):
-                    st.error("Transaction reverted - check contract requirements")
-                if "nonce too low" in str(e):
-                    st.error("Nonce error - try again")
+                    if royalty > 20:
+                        st.error("Royalty cannot exceed 20%")
+                        st.stop()
+
+                    # Get current state
+                    token_count_before = registry.functions.getCurrentTokenId().call()
+                    
+                    # Create contract call
+                    register_func = registry.functions.registerArtwork(metadata, royalty)
+
+                    # Initialize gas estimate with default value
+                    gas_estimate = 300000
+                    
+                    # Gas estimation
+                    try:
+                        with st.spinner("Estimating gas requirements..."):
+                            gas_estimate = register_func.estimate_gas({
+                                'from': selected_account,
+                                'nonce': w3.eth.get_transaction_count(selected_account)
+                            })
+                            st.success(f"Gas estimate: {gas_estimate} wei")
+                    except Exception as e:
+                        st.warning(f"Gas estimation failed, using default: {str(e)}")
+
+                    # Prepare transaction with the gas estimate
+                    tx_dict = {
+                        'from': selected_account,
+                        'gas': gas_estimate,
+                        'gasPrice': w3.to_wei('50', 'gwei'),
+                        'nonce': w3.eth.get_transaction_count(selected_account)
+                    }
+
+                    # Execute transaction
+                    with st.spinner("Processing blockchain transaction..."):
+                        tx_hash = register_func.transact(tx_dict)
+                        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+
+                    # Verification
+                    token_count_after = registry.functions.getCurrentTokenId().call()
+                    
+                    if token_count_after > token_count_before:
+                        new_token_id = token_count_after - 1
+                        # In your verification block:
+                        try:
+                            artwork_info = registry.functions.getArtworkInfo(new_token_id).call()
+                            if len(artwork_info) == 4:  # Ensure we got the expected tuple
+                                creator, stored_metadata, stored_royalty, is_licensed = artwork_info
+                                st.success("### ✅ Artwork Successfully Registered!")
+                                st.balloons()
+                            
+                                with st.expander("Registration Details", expanded=True):
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        st.write("**Artwork Information**")
+                                        st.write(f"- Token ID: `{new_token_id}`")
+                                        st.write(f"- Creator: `{creator}`")
+                                        st.write(f"- Royalty: `{stored_royalty}%`")
+                                        st.write(f"- Metadata: `{stored_metadata}`")
+                                    
+                                    with col2:
+                                        st.write("**Transaction Details**")
+                                        st.write(f"- TX Hash: `{tx_hash.hex()}`")
+                                        st.write(f"- Block: `{receipt['blockNumber']}`")
+                                        st.write(f"- Gas Used: `{receipt['gasUsed']}`")
+                                        st.write(f"- Status: `Success`")
+
+                            else:
+                                    st.warning(f"Artwork registered (Token ID: {new_token_id}) but got unexpected response format")
+
+                        except Exception as e:
+                            st.error(f"Verification failed: {str(e)}")
+                            st.warning(f"Artwork was registered (Token ID: {new_token_id}) but we couldn't verify details")
+                    
+                    else:
+                        st.error("❌ Registration failed - no new token was created")
+
+                except Exception as e:
+                    st.error("### 🔥 Registration Failed")
+                    
+                    # Enhanced error diagnostics
+                    error_type = type(e).__name__
+                    error_msg = str(e)
+                    
+                    st.write(f"**Error Type:** {error_type}")
+                    st.write(f"**Message:** {error_msg}")
+                    
+                    # Common error scenarios
+                    if "reverted" in error_msg:
+                        st.error("**Possible Reasons:**")
+                        st.error("- Royalty percentage exceeds maximum (20%)")
+                        st.error("- Invalid metadata format")
+                        st.error("- Insufficient account balance for gas")
+                    
+                    elif "nonce too low" in error_msg:
+                        st.error("**Solution:** Try the transaction again")
+                    
+                    elif "execution reverted" in error_msg:
+                        st.error("**Contract Reverted:** Check smart contract requirements")
+                    
+                    # Technical details
+                    with st.expander("Debug Information"):
+                        st.write("### Technical Details")
+                        st.json({
+                            "error_type": error_type,
+                            "error_message": error_msg,
+                            "demo_mode": DEMO_MODE,
+                            "chain_id": w3.eth.chain_id if not DEMO_MODE else "demo",
+                            "account": selected_account,
+                            "metadata": metadata,
+                            "royalty": royalty
+                        })
 
     with tab2:
-        st.header("Artwork Licensing")
+        st.header("🎫 Artwork Licensing")
+        
+        # Check for registered artworks
+        try:
+            token_count = registry.functions.getCurrentTokenId().call()
+            if token_count == 0:
+                st.warning("No artworks registered yet. Please register an artwork first.")
+                if st.button("⏩ Go to Registration Tab"):
+                    st.session_state.current_tab = "🎨 Artwork Registration"
+                    st.rerun()  # Changed from experimental_rerun()
+                st.stop()
+        except Exception as e:
+            st.error(f"🔴 Error checking artwork registry: {str(e)}")
+            st.stop()
+
         col1, col2 = st.columns(2)
         
+        # Grant License Column
         with col1:
-            st.subheader("Grant License")
+            st.subheader("🟢 Grant License")
             with st.form("grant_license_form"):
-                token_id = st.number_input("Token ID", min_value=0, step=1, key="license_token_id")
-                licensee = account_selector("Licensee Address", accounts, default_index=1)
-                duration_days = st.number_input("License Duration (days)", min_value=1, value=30)
-                license_type = st.selectbox("License Type", ["PERSONAL", "COMMERCIAL", "EXCLUSIVE"])
-                terms_hash = st.text_input("License Terms (IPFS Hash)", "ipfs://Qm...")
-
-                submitted = st.form_submit_button("Grant License")
+                token_id = st.number_input(
+                    "Artwork Token ID",
+                    min_value=0,
+                    max_value=token_count-1,
+                    value=0,
+                    step=1,
+                    help="ID of the artwork to license"
+                )
                 
-                if submitted:
-                    with st.spinner("Granting license..."):
+                st.markdown("**Licensee Address**")
+                licensee = account_selector("Select Licensee", accounts, default_index=1)
+                
+                duration_days = st.number_input(
+                    "Duration (days)",
+                    min_value=1,
+                    value=30,
+                    step=1,
+                    help="License duration in days"
+                )
+                
+                license_type = st.selectbox(
+                    "License Type",
+                    ["PERSONAL", "COMMERCIAL", "EXCLUSIVE"],
+                    index=0,
+                    help="Type of usage rights"
+                )
+                
+                terms_hash = st.text_input(
+                    "Terms IPFS Hash",
+                    "ipfs://Qm...",
+                    help="Hash of license terms document"
+                )
+                
+                if st.form_submit_button("✍️ Grant License"):
+                    with st.spinner("⏳ Processing license grant..."):
                         try:
+                            artwork_info = registry.functions.getArtworkInfo(token_id).call()
+                            
+                            tx_dict = {
+                                'from': selected_account,
+                                'gas': 250000,
+                                'gasPrice': w3.to_wei('50', 'gwei'),
+                                'nonce': w3.eth.get_transaction_count(selected_account)
+                            }
+                            
+                            license_type_index = ["PERSONAL", "COMMERCIAL", "EXCLUSIVE"].index(license_type)
+                            
                             tx_hash = licensing.functions.grantLicense(
                                 token_id,
                                 licensee,
                                 duration_days,
                                 terms_hash,
-                                ["PERSONAL", "COMMERCIAL", "EXCLUSIVE"].index(license_type)
-                            ).transact({'from': selected_account})
+                                license_type_index
+                            ).transact(tx_dict)
+                            
                             receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-                            st.success("✅ License granted successfully!")
-                            st.info(f"Transaction hash: {tx_hash.hex()}")
+                            
+                            st.success("✅ License Granted Successfully!")
+                            with st.expander("📄 License Details", expanded=True):
+                                cols = st.columns(2)
+                                cols[0].write(f"**Artwork ID:** {token_id}")
+                                cols[1].write(f"**Licensee:** `{licensee}`")
+                                cols[0].write(f"**Duration:** {duration_days} days")
+                                cols[1].write(f"**Type:** {license_type}")
+                                st.write(f"**Terms Hash:** `{terms_hash}`")
+                                st.write(f"**TX Hash:** `{tx_hash.hex()}`")
+                                
                         except Exception as e:
-                            st.error(f"Error: {str(e)}")
-        
-        with col2:
-            st.subheader("Revoke License")
-            with st.form("revoke_license_form"):
-                revoke_token_id = st.number_input("Token ID", min_value=0, step=1, key="revoke_token_id")
-                revoke_licensee = account_selector("Licensee to Revoke", accounts, default_index=1)
+                            st.error(f"❌ Failed to grant license: {str(e)}")
+                            if "Not owner" in str(e):
+                                st.error("⚠️ You must be the artwork owner")
+                            elif "Nonexistent token" in str(e):
+                                st.error("⚠️ Artwork doesn't exist")
 
-                submitted = st.form_submit_button("Revoke License")
+        # Revoke License Column
+        with col2:
+            st.subheader("🔴 Revoke License")
+            with st.form("revoke_license_form"):
+                revoke_token_id = st.number_input(
+                    "Artwork Token ID",
+                    min_value=0,
+                    max_value=token_count-1,
+                    value=0,
+                    step=1,
+                    help="ID of licensed artwork"
+                )
                 
-                if submitted:
-                    with st.spinner("Revoking license..."):
+                st.markdown("**Licensee Address**")
+                revoke_licensee = account_selector("Select Licensee", accounts, default_index=1)
+                
+                if st.form_submit_button("🗑️ Revoke License"):
+                    with st.spinner("⏳ Processing revocation..."):
                         try:
+                            tx_dict = {
+                                'from': selected_account,
+                                'gas': 150000,
+                                'gasPrice': w3.to_wei('50', 'gwei'),
+                                'nonce': w3.eth.get_transaction_count(selected_account)
+                            }
+                            
                             tx_hash = licensing.functions.revokeLicense(
                                 revoke_token_id,
                                 revoke_licensee
-                            ).transact({'from': selected_account})
+                            ).transact(tx_dict)
+                            
                             receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-                            st.success("✅ License revoked successfully!")
-                            st.info(f"Transaction hash: {tx_hash.hex()}")
+                            
+                            st.success("✅ License Revoked Successfully!")
+                            with st.expander("📄 Revocation Details"):
+                                cols = st.columns(2)
+                                cols[0].write(f"**Artwork ID:** {revoke_token_id}")
+                                cols[1].write(f"**Licensee:** `{revoke_licensee}`")
+                                st.write(f"**TX Hash:** `{tx_hash.hex()}`")
+                                st.write(f"**Gas Used:** {receipt['gasUsed']}")
+                                
                         except Exception as e:
-                            st.error(f"Error: {str(e)}")
+                            st.error(f"❌ Failed to revoke license: {str(e)}")
+                            if "Not owner" in str(e):
+                                st.error("⚠️ You must be the artwork owner")
+                            elif "License not active" in str(e):
+                                st.error("⚠️ License already inactive")
 
     with tab3:
-     st.header("Royalty Management")
-    
-    # First check if we have any artworks
-     try:
-        token_count = registry.functions.getCurrentTokenId().call()
-        if token_count == 0:
-            st.warning("No artworks registered yet. Register an artwork first.")
+        st.header("Royalty Management")
+        
+        # First check if we have any artworks
+        try:
+            token_count = registry.functions.getCurrentTokenId().call()
+            if token_count == 0:
+                st.warning("No artworks registered yet. Register an artwork first.")
+                st.stop()
+        except Exception as e:
+            st.error(f"Couldn't check artwork count: {str(e)}")
             st.stop()
-     except Exception as e:
-        st.error(f"Couldn't check artwork count: {str(e)}")
-        st.stop()
 
-     st.subheader("Simulate Artwork Sale")
-     sale_type = st.radio("Sale Type", ["Primary Sale", "Secondary Sale"])
-    
-     with st.form("simulate_sale_form"):
-        token_id = st.number_input("Token ID", min_value=0, max_value=token_count-1, step=1)
+        st.subheader("Simulate Artwork Sale")
+        sale_type = st.radio("Sale Type", ["Primary Sale", "Secondary Sale"])
         
-        if sale_type == "Primary Sale":
-            buyer = account_selector("Buyer Address", accounts, default_index=1)
-            sale_price = st.number_input("Sale Price (in ETH)", min_value=0.1, value=1.0, step=0.1)
-            sale_price_wei = w3.to_wei(sale_price, 'ether')
+        with st.form("simulate_sale_form"):
+            token_id = st.number_input("Token ID", min_value=0, max_value=token_count-1, step=1)
             
-            if st.form_submit_button("Simulate Primary Sale"):
-                try:
-                    # Get artwork info
-                    creator, metadata, royalty_percent, is_licensed = registry.functions.getArtworkInfo(token_id).call()
-                    
-                    platform_fee = sale_price_wei // 20  # 5%
-                    creator_amount = sale_price_wei - platform_fee
-                    
-                    st.info(f"**Creator:** {creator}")
-                    st.info(f"**Royalty Percentage:** {royalty_percent}%")
-                    st.success(f"**Creator Receives:** {w3.from_wei(creator_amount, 'ether'):.4f} ETH")
-                    st.success(f"**Platform Fee:** {w3.from_wei(platform_fee, 'ether'):.4f} ETH")
-                    
-                except Exception as e:
-                    st.error(f"Simulation failed: {str(e)}")
-        
-        else:  # Secondary Sale
-            seller = account_selector("Seller Address", accounts, default_index=1)
-            sale_price = st.number_input("Sale Price (in ETH)", min_value=0.1, value=1.0, step=0.1)
-            sale_price_wei = w3.to_wei(sale_price, 'ether')
+            if sale_type == "Primary Sale":
+                buyer = account_selector("Buyer Address", accounts, default_index=1)
+                sale_price = st.number_input("Sale Price (in ETH)", min_value=0.1, value=1.0, step=0.1)
+                sale_price_wei = w3.to_wei(sale_price, 'ether')
+                
+                if st.form_submit_button("Simulate Primary Sale"):
+                    try:
+                        # Get artwork info
+                        creator, metadata, royalty_percent, is_licensed = registry.functions.getArtworkInfo(token_id).call()
+                        
+                        platform_fee = sale_price_wei // 20  # 5%
+                        creator_amount = sale_price_wei - platform_fee
+                        
+                        st.info(f"**Creator:** {creator}")
+                        st.info(f"**Royalty Percentage:** {royalty_percent}%")
+                        st.success(f"**Creator Receives:** {w3.from_wei(creator_amount, 'ether'):.4f} ETH")
+                        st.success(f"**Platform Fee:** {w3.from_wei(platform_fee, 'ether'):.4f} ETH")
+                        
+                    except Exception as e:
+                        st.error(f"Simulation failed: {str(e)}")
             
-            if st.form_submit_button("Simulate Secondary Sale"):
-                try:
-                    # Get artwork info
-                    creator, metadata, royalty_percent, is_licensed = registry.functions.getArtworkInfo(token_id).call()
-                    
-                    royalty_amount = (sale_price_wei * royalty_percent) // 100
-                    seller_amount = sale_price_wei - royalty_amount
-                    
-                    st.info(f"**Creator:** {creator}")
-                    st.info(f"**Royalty Percentage:** {royalty_percent}%")
-                    st.success(f"**Royalty Amount:** {w3.from_wei(royalty_amount, 'ether'):.4f} ETH")
-                    st.success(f"**Seller Receives:** {w3.from_wei(seller_amount, 'ether'):.4f} ETH")
-                    
-                except Exception as e:
-                    st.error(f"Simulation failed: {str(e)}")
+            else:  # Secondary Sale
+                seller = account_selector("Seller Address", accounts, default_index=1)
+                sale_price = st.number_input("Sale Price (in ETH)", min_value=0.1, value=1.0, step=0.1)
+                sale_price_wei = w3.to_wei(sale_price, 'ether')
+                
+                if st.form_submit_button("Simulate Secondary Sale"):
+                    try:
+                        # Get artwork info
+                        creator, metadata, royalty_percent, is_licensed = registry.functions.getArtworkInfo(token_id).call()
+                        
+                        royalty_amount = (sale_price_wei * royalty_percent) // 100
+                        seller_amount = sale_price_wei - royalty_amount
+                        
+                        st.info(f"**Creator:** {creator}")
+                        st.info(f"**Royalty Percentage:** {royalty_percent}%")
+                        st.success(f"**Royalty Amount:** {w3.from_wei(royalty_amount, 'ether'):.4f} ETH")
+                        st.success(f"**Seller Receives:** {w3.from_wei(seller_amount, 'ether'):.4f} ETH")
+                        
+                    except Exception as e:
+                        st.error(f"Simulation failed: {str(e)}")
 
     with tab4:
         st.header("Artwork Explorer")
         
-        # Display all artworks by checking ownerOf until failure
-        st.info("Scanning blockchain for registered artworks...")
-        artworks = []
-        token_id = 0
-        
-        with st.spinner("Searching for artworks..."):
-            while True:
+        try:
+            token_count = registry.functions.getCurrentTokenId().call()
+            artworks = []
+            
+            for token_id in range(token_count):
                 try:
                     owner = registry.functions.ownerOf(token_id).call()
                     artwork_info = registry.functions.getArtworkInfo(token_id).call()
-                    
-                    # Get license status
-                    is_licensed = artwork_info[3]
-                    license_info = None
-                    
-                    if is_licensed:
-                        try:
-                            # Get current licensee
-                            licensee = licensing.functions.currentLicensee(token_id).call()
-                            if licensee != "0x0000000000000000000000000000000000000000":
-                                # Get license count
-                                license_count = licensing.functions.getLicenseCount(token_id).call()
-                                licenses = []
-                                
-                                for i in range(license_count):
-                                    # Get each license's details
-                                    license_details = licensing.functions.getLicenseDetails(token_id, i).call()
-                                    licenses.append({
-                                        'licensee': license_details[0],
-                                        'startDate': datetime.fromtimestamp(license_details[1]),
-                                        'endDate': datetime.fromtimestamp(license_details[2]),
-                                        'termsHash': license_details[3],
-                                        'licenseType': ["PERSONAL", "COMMERCIAL", "EXCLUSIVE"][license_details[4]],
-                                        'isActive': license_details[5]
-                                    })
-                                
-                                license_info = {
-                                    'currentLicensee': licensee,
-                                    'licenses': licenses
-                                }
-                        except Exception as e:
-                            st.warning(f"Couldn't fetch license info for token {token_id}: {str(e)}")
                     
                     artworks.append({
                         'token_id': token_id,
@@ -583,60 +822,24 @@ def main():
                         'creator': artwork_info[0],
                         'metadataURI': artwork_info[1],
                         'royaltyPercentage': artwork_info[2],
-                        'isLicensed': is_licensed,
-                        'licenseInfo': license_info
+                        'isLicensed': artwork_info[3]
                     })
-                    token_id += 1
                 except Exception as e:
-                    if "reverted" in str(e) or "invalid opcode" in str(e):
-                        break  # Reached end of artworks
-                    st.warning(f"Error checking token {token_id}: {str(e)}")
-                    break
-        
-        if not artworks:
-            st.info("No artworks registered yet")
-            st.stop()
-        
-        # Display all found artworks
-        for artwork in artworks:
-            with st.expander(f"Artwork #{artwork['token_id']}"):
-                # Display basic info
-                st.write(f"**Owner:** `{artwork['owner']}`")
-                st.write(f"**Creator:** `{artwork['creator']}`")
-                st.write(f"**Metadata URI:** `{artwork['metadataURI']}`")
-                st.write(f"**Royalty Percentage:** `{artwork['royaltyPercentage']}%`")
-                st.write(f"**Licensed:** `{'Yes' if artwork['isLicensed'] else 'No'}`")
-                
-                # Show license info if licensed
-                if artwork['isLicensed'] and artwork['licenseInfo']:
-                    st.write("---")
-                    st.subheader("License Details")
+                    continue
                     
-                    # Find active license
-                    active_license = None
-                    for license in artwork['licenseInfo']['licenses']:
-                        if license['isActive'] and license['licensee'] == artwork['licenseInfo']['currentLicensee']:
-                            active_license = license
-                            break
-                    
-                    if active_license:
-                        st.write(f"**Current Licensee:** `{active_license['licensee']}`")
-                        st.write(f"**Type:** `{active_license['licenseType']}`")
-                        st.write(f"**Start Date:** `{active_license['startDate']}`")
-                        st.write(f"**End Date:** `{active_license['endDate']}`")
-                        st.write(f"**Terms:** `{active_license['termsHash']}`")
-                    else:
-                        st.warning("No active license found")
-                    
-                    # Show all licenses if requested
-                    if st.checkbox(f"Show all licenses for Artwork #{artwork['token_id']}", key=f"licenses_{artwork['token_id']}"):
-                        for i, license in enumerate(artwork['licenseInfo']['licenses']):
-                            st.write(f"#### License #{i+1}")
-                            st.write(f"- Licensee: `{license['licensee']}`")
-                            st.write(f"- Type: `{license['licenseType']}`")
-                            st.write(f"- Status: `{'Active' if license['isActive'] else 'Inactive'}`")
-                            st.write(f"- Dates: `{license['startDate']}` to `{license['endDate']}`")
-                            st.write(f"- Terms: `{license['termsHash']}`")
+            if not artworks:
+                st.info("No artworks registered yet")
+            else:
+                for artwork in artworks:
+                    with st.expander(f"Artwork #{artwork['token_id']}"):
+                        st.write(f"**Owner:** `{artwork['owner']}`")
+                        st.write(f"**Creator:** `{artwork['creator']}`")
+                        st.write(f"**Metadata URI:** `{artwork['metadataURI']}`")
+                        st.write(f"**Royalty Percentage:** `{artwork['royaltyPercentage']}%`")
+                        st.write(f"**Licensed:** `{'Yes' if artwork['isLicensed'] else 'No'}`")
+                        
+        except Exception as e:
+            st.error(f"Error scanning artworks: {str(e)}")
 
 if __name__ == "__main__":
     main()

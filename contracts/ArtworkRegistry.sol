@@ -46,26 +46,25 @@ contract ArtworkRegistry is ERC721, Ownable, IERC2981 {
     }
 
     function registerArtwork(
-    address owner,
-    string memory metadataURI,
-    uint256 royaltyPercentage
-) public returns (uint256) {
-    require(royaltyPercentage <= 20, "Royalty cannot exceed 20%");
-    
-    uint256 tokenId = tokenCount;
-    _safeMint(owner, tokenId);
-    _setTokenURI(tokenId, metadataURI);
-    
-    _artworks[tokenId] = Artwork({
-        creator: msg.sender,
-        metadataURI: metadataURI,
-        royaltyPercentage: royaltyPercentage,
-        isLicensed: false
-    });
+        string memory metadataURI,
+        uint256 royaltyPercentage
+    ) public returns (uint256) {
+        require(royaltyPercentage <= 20, "Royalty cannot exceed 20%");
+        
+        uint256 tokenId = tokenCount;
+        _safeMint(msg.sender, tokenId);
+        _setTokenURI(tokenId, metadataURI);
+        
+        _artworks[tokenId] = Artwork({
+            creator: msg.sender,
+            metadataURI: metadataURI,
+            royaltyPercentage: royaltyPercentage,
+            isLicensed: false
+        });
 
-    tokenCount++; // Increment after all operations are successful
-    emit ArtworkRegistered(tokenId, msg.sender, metadataURI, royaltyPercentage);
-    return tokenId;
+        tokenCount++;
+        emit ArtworkRegistered(tokenId, msg.sender, metadataURI, royaltyPercentage);
+        return tokenId;
     }
 
     function getArtworkInfo(uint256 tokenId) public view returns (
