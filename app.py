@@ -43,7 +43,7 @@ def wei_input(label, default_value=0):
         st.error("Please enter a valid integer value")
         return 0
 
-DEMO_MODE = False  # Set to False for real blockchain connection
+DEMO_MODE = True  # Set to False for real blockchain connection
 
 # --- Mock Data Storage ---
 class MockArtworkSystem:
