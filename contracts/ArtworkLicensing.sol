@@ -37,7 +37,7 @@ contract ArtworkLicensing {
         LicenseType licenseType
     ) external {
         require(artworkRegistry.ownerOf(tokenId) == msg.sender, "Not owner");
-        require(artworkRegistry.tokenURI(tokenId).length > 0, "Artwork does not exist");
+        require(artworkRegistry.ownerOf(tokenId) != address(0), "Artwork does not exist");
         
         uint256 startDate = block.timestamp;
         uint256 endDate = startDate + (durationInDays * 1 days);
