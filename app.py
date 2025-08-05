@@ -55,18 +55,24 @@ class MockArtworkSystem:
             "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",  # Owner/creator
             "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"   # Licensee
         ]
+        # Initialize balances (100 ETH each)
+        self.balances = {
+            self.accounts[0]: Web3.to_wei(100, 'ether'),
+            self.accounts[1]: Web3.to_wei(100, 'ether')
+        }
         self.licensing_contract = None
         self.license_counter = 0
         
+    # Make sure this matches the real contract exactly
+    def getCurrentTokenId(self):
+        return self.token_count
+        
+    # Keep this for backward compatibility
     def get_current_token_id(self):
         return self.token_count
         
     def register_artwork(self, *args):
-        # Handle all possible calling patterns:
-        # - Direct call (owner, metadata, royalty)
-        # - Web3 call (tx_dict, owner, metadata, royalty)
-        # - Simplified call (metadata, royalty)
-        
+        # Handle all possible calling patterns
         if len(args) == 2:  # Simplified call (metadata, royalty)
             metadata, royalty = args
             owner = "mock_owner"
@@ -159,7 +165,6 @@ class MockArtworkSystem:
             license['licenseType'],
             license['isActive']
         )
-
     
     def revoke_license(self, token_id, licensee):
         for license_data in self.licenses:
@@ -174,7 +179,10 @@ class MockArtworkSystem:
         )
         self.artworks[token_id]['isLicensed'] = has_active_license
 
-mock_system = MockArtworkSystem()
+# Replace the mock_system initialization with this:
+if 'mock_system' not in st.session_state:
+    st.session_state.mock_system = MockArtworkSystem()
+mock_system = st.session_state.mock_system
 
 class MockContractFunction:
     def __init__(self, callback, estimate_gas=200000):  # Set default estimate_gas
@@ -218,13 +226,16 @@ class MockContractFunction:
 
 class MockContract:
     def __init__(self, contract_type):
+        # Get the mock system from session state
+        mock_system = st.session_state.mock_system
+        
         if contract_type == "registry":
             self.functions = type('', (), {
                 'registerArtwork': self._create_function(
                     lambda *args: mock_system.register_artwork(*args),
                     estimate_gas=200000
                 ),
-                'getCurrentTokenId': self._create_getter(mock_system.get_current_token_id),
+                'getCurrentTokenId': self._create_getter(mock_system.getCurrentTokenId),
                 'getArtworkInfo': self._create_function(
                     lambda *args: mock_system.get_artwork_info(args)
                 ),
@@ -267,7 +278,7 @@ class MockEth:
         self.chain_id = 31337
         
     def get_balance(self, account):
-        return Web3.to_wei(100, 'ether')
+        return mock_system.balances.get(account, 0)
         
     def get_transaction_count(self, account):
         return 0
@@ -340,7 +351,10 @@ else:
         st.error(f"Connection error: {str(e)}")
         st.stop()
 
+# Modify the load_contracts function to handle fallback without modifying DEMO_MODE
 def load_contracts():
+    global DEMO_MODE  # Add this line to allow modification of the global variable
+    
     if DEMO_MODE:
         # These ABIs can be empty - just need the contract names
         registry_abi = '{"contractName":"ArtworkRegistry"}'
@@ -351,79 +365,40 @@ def load_contracts():
             'licensing': w3.eth.contract(abi=licensing_abi)
         }
     else:
-        if not os.path.exists('contract-addresses.json'):
-            st.error("Contracts not deployed yet!")
-            if st.button("🚀 Deploy Contracts Now"):
-                try:
-                    with st.spinner("Deploying contracts..."):
-                        # Use the full path to npx
-                        npx_path = os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "npm", "npx.cmd")  # Windows
-                        if not os.path.exists(npx_path):
-                            npx_path = "npx"  # Fallback for other OS
-                        
-                        result = subprocess.run(
-                            [npx_path, "hardhat", "run", "scripts/deploy_all.js", "--network", "localhost"],
-                            cwd=os.getcwd(),  # Run in current working directory
-                            shell=True,       # Needed for Windows
-                            capture_output=True,
-                            text=True
-                        )
-                        
-                        if result.returncode == 0:
-                            st.success("✅ Contracts deployed successfully!")
-                            st.code(result.stdout)
-                            st.experimental_rerun()
-                        else:
-                            st.error(f"Deployment failed:\n{result.stderr}")
-                            st.code(result.stdout)
-                except Exception as e:
-                    st.error(f"Deployment error: {str(e)}")
-                    st.error("Please ensure:")
-                    st.error("1. Hardhat is installed (npm install --save-dev hardhat)")
-                    st.error("2. You're running this in your project directory")
-                    st.error("3. The hardhat node is running (npx hardhat node)")
-            st.stop()
-
-        # Load contract addresses with version checking
         try:
+            # First try to load existing contracts
+            if not os.path.exists('contract-addresses.json'):
+                st.warning("Contracts not deployed - falling back to demo mode behavior")
+                # Instead of modifying DEMO_MODE, just return demo contracts
+                registry_abi = '{"contractName":"ArtworkRegistry"}'
+                licensing_abi = '{"contractName":"ArtworkLicensing"}'
+                return {
+                    'registry': w3.eth.contract(abi=registry_abi),
+                    'licensing': w3.eth.contract(abi=licensing_abi)
+                }
+            
             with open('contract-addresses.json') as f:
                 addresses = json.load(f)
             
-            # Verify we're on the correct network
-            if addresses.get('network') != "localhost" and w3.eth.chain_id != 31337:
-                st.error("Contracts not deployed to localhost network")
-                st.stop()
-        except Exception as e:
-            st.error(f"Error loading contract addresses: {str(e)}")
-            st.stop()
+            # Load ABIs with error handling
+            @st.cache_resource
+            def load_abi(name):
+                try:
+                    path = Path(f'./artifacts/contracts/{name}.sol/{name}.json')
+                    if not path.exists():
+                        raise FileNotFoundError(f"ABI file not found at {path}")
+                    with open(path) as f:
+                        return json.load(f)['abi']
+                except Exception as e:
+                    st.error(f"Error loading {name} ABI: {str(e)}")
+                    st.stop()
 
-        # Load ABIs with caching
-        @st.cache_resource
-        def load_abi(name):
-            try:
-                path = Path(f'./artifacts/contracts/{name}.sol/{name}.json')
-                with open(path) as f:
-                    abi = json.load(f)['abi']
-                return abi
-            except Exception as e:
-                st.error(f"Error loading {name} ABI: {str(e)}")
-                st.stop()
-
-        # Initialize contracts with checks
-        try:
+            # Initialize contracts
             registry = w3.eth.contract(
                 address=addresses['registry'],
                 abi=load_abi('ArtworkRegistry')
             )
             
-            # Verify registry is callable
-            try:
-                token_count = registry.functions.getCurrentTokenId().call()
-                st.sidebar.info(f"Total artworks: {token_count}")
-            except Exception as e:
-                st.error(f"Registry call failed: {str(e)}")
-                st.stop()
-
             licensing = w3.eth.contract(
                 address=addresses['licensing'],
                 abi=load_abi('ArtworkLicensing')
@@ -435,11 +410,55 @@ def load_contracts():
             }
 
         except Exception as e:
-            st.error(f"Contract initialization failed: {str(e)}")
-            st.stop()
+            st.error(f"Contract loading failed: {str(e)} - falling back to demo mode")
+            # Instead of modifying DEMO_MODE, just return demo contracts
+            registry_abi = '{"contractName":"ArtworkRegistry"}'
+            licensing_abi = '{"contractName":"ArtworkLicensing"}'
+            return {
+                'registry': w3.eth.contract(abi=registry_abi),
+                'licensing': w3.eth.contract(abi=licensing_abi)
+            }
+
+def add_demo_toggle():
+    """Add this function to allow runtime demo mode switching"""
+    global DEMO_MODE  # Add this to modify the global variable
+    
+    with st.sidebar:
+        st.markdown("---")
+        st.subheader("⚙️ Configuration")
+        
+        demo_mode = st.checkbox(
+            "Enable Demo Mode", 
+            value=DEMO_MODE,
+            help="Switch between demo simulation and real blockchain"
+        )
+        
+        if demo_mode != DEMO_MODE:
+            DEMO_MODE = demo_mode  # Update the global variable
+            st.warning("⚠️ Mode change requires app restart")
+            if st.button("🔄 Restart App"):
+                st.rerun()
+                
+        return DEMO_MODE
 
 def main():
     st.title("🎨 Artwork DRM System")
+    
+    # FIX 3: Add clear demo mode indicator
+    if DEMO_MODE:
+        st.warning("🚀 **DEMO MODE ACTIVE** - Using simulated blockchain for demonstration")
+        with st.expander("ℹ️ Demo Mode Information"):
+            st.info("""
+            **Demo Mode Features:**
+            - ✅ Simulated blockchain transactions
+            - ✅ No real gas costs
+            - ✅ Instant confirmations
+            - ✅ All features available for testing
+            
+            **Note:** This is for demonstration only. No real blockchain transactions occur.
+            """)
+    else:
+        st.success("🔗 **LIVE MODE** - Connected to real blockchain")
 
     # Load contracts
     contracts = load_contracts()
@@ -463,6 +482,15 @@ def main():
         balance = w3.from_wei(w3.eth.get_balance(selected_account), 'ether')
         st.info(f"Account: {selected_account}")
         st.info(f"Balance: {balance:.4f} ETH")
+
+
+        if DEMO_MODE and st.button("🛠️ Debug Mock System"):
+            st.write("### Mock System State")
+            st.json({
+                "token_count": mock_system.token_count,
+                "artworks": mock_system.artworks,
+                "licenses": mock_system.licenses
+            })
 
     # Create tabs
     tab1, tab2, tab3, tab4 = st.tabs([
@@ -602,6 +630,32 @@ def main():
     with tab2:
         st.header("🎫 Artwork Licensing")
         
+        # Enhanced artwork check with demo mode handling
+        try:
+            if DEMO_MODE:
+                token_count = mock_system.token_count
+                st.sidebar.info(f"🎯 Demo Mode: {token_count} mock artworks available")
+            else:
+                token_count = registry.functions.getCurrentTokenId().call()
+                
+            if token_count == 0:
+                st.warning("No artworks registered yet. Please register an artwork first.")
+                if st.button("⏩ Go to Registration Tab"):
+                    st.session_state.current_tab = "🎨 Artwork Registration"
+                    st.rerun()
+                st.stop()
+                
+            # Debug info in demo mode
+            if DEMO_MODE:
+                with st.expander("🔍 Mock System State (Debug)"):
+                    st.write(f"Token count: {mock_system.token_count}")
+                    st.write(f"Artworks: {len(mock_system.artworks)}")
+                    st.write(f"Licenses: {len(mock_system.licenses)}")
+                    
+        except Exception as e:
+            st.error(f"🔴 Error checking artwork registry: {str(e)}")
+            st.stop()        
+
         # Check for registered artworks
         try:
             token_count = registry.functions.getCurrentTokenId().call()
