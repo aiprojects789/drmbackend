@@ -1518,13 +1518,22 @@ def main():
                     # Get current state
                     token_count_before = registry.functions.getCurrentTokenId().call()
                     
-                    # Create contract call - works for both demo and live modes
-                    register_func = registry.functions.registerArtwork(
-                        account,    # owner address
-                        metadata,   # metadata URI
-                        royalty     # royalty percentage
-                    )
+                    # Create contract call - works for both demo and live mode
+                    if DEMO_MODE:
+                        # Demo mode uses the original 3-parameter version
+                        register_func = registry.functions.registerArtwork(
+                            account,    # owner address
+                            metadata,   # metadata URI
+                            royalty     # royalty percentage
+                        )
+                    else:
+                        # Real mode uses the 2-parameter version from the contract
+                        register_func = registry.functions.registerArtwork(
+                            metadata,   # metadata URI
+                            royalty     # royalty percentage
+                        )
 
+                    # The rest of your code remains the same for both modes:
                     # Gas estimation
                     gas_estimate = 300000  # Default value
                     try:
@@ -1544,7 +1553,6 @@ def main():
                         'gasPrice': w3.to_wei('50', 'gwei'),
                         'nonce': w3.eth.get_transaction_count(account)
                     }
-
                     # Execute transaction
                     with st.spinner("Processing blockchain transaction..."):
                         tx_hash = register_func.transact(tx_dict)
