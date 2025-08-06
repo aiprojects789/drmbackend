@@ -11,10 +11,16 @@ class Database:
 
 db = Database()
 
+# Optional global access (if needed)
+client: Optional[AsyncIOMotorClient] = None
+database: Optional[AsyncIOMotorDatabase] = None
+
 import asyncio
 
 async def connect_to_mongo():
     """Reconnect to MongoDB if event loop was closed or db is None"""
+    global client, database  # allow global access if needed
+
     try:
         if db.client is None or db.db is None:
             db.client = AsyncIOMotorClient(
@@ -26,6 +32,11 @@ async def connect_to_mongo():
             )
             await db.client.admin.command('ping')
             db.db = db.client[settings.DB_NAME]
+
+            # Update global accessors
+            client = db.client
+            database = db.db
+
             logger.info("✅ Connected to MongoDB")
         else:
             # check if current loop is still valid
@@ -64,12 +75,8 @@ def get_user_collection():
 
 def get_artwork_collection():
     """Get artworks collection with validation"""
-    return get_db().artworks
+    return get_db()["artworks"]
 
 def get_wallet_collection():
     """Get wallets collection with validation"""
     return get_db().wallets
-
-    
-def get_artwork_collection():
-    return db.art_drm_local["artworks"]

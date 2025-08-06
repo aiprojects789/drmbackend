@@ -8,6 +8,13 @@ class UserRole(str, Enum):
     ADMIN = "admin"
     USER = "user"
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class UserEmailRequest(BaseModel):
+    email: str
+
 class UserBase(BaseModel):
     email: EmailStr = Field(description="Used for authentication")
     username: Annotated[str, StringConstraints(
