@@ -1120,6 +1120,28 @@ class MockArtworkSystem:
             for l in self.licenses
         )
         self.artworks[token_id]['isLicensed'] = has_active_license
+    
+    def get_artworks(self):
+        """Return all registered artworks in a standardized format"""
+        return [
+            {
+                'token_id': i,
+                'owner': art['owner'],
+                'creator': art['creator'],
+                'metadataURI': art['metadata'],
+                'royaltyPercentage': art['royalty'],
+                'isLicensed': art['isLicensed']
+            }
+            for i, art in enumerate(self.artworks)
+        ]
+    
+    def transfer_ownership(self, token_id, new_owner):
+        """Transfer artwork ownership in demo mode"""
+        new_owner = Web3.to_checksum_address(new_owner)
+        if token_id >= len(self.artworks):
+            raise ValueError("Artwork does not exist")
+        self.artworks[token_id]['owner'] = new_owner
+        return True
 
 # Replace the mock_system initialization with this:
 if 'mock_system' not in st.session_state:
@@ -1786,7 +1808,6 @@ def main():
     with tab3:
         st.header("Royalty Management")
         
-        # First check if we have any artworks
         try:
             token_count = registry.functions.getCurrentTokenId().call()
             if token_count == 0:
@@ -1815,16 +1836,25 @@ def main():
                         platform_fee = sale_price_wei // 20  # 5%
                         creator_amount = sale_price_wei - platform_fee
                         
+                        if DEMO_MODE:
+                            # Actually transfer funds in demo mode
+                            mock_system.transfer_eth(buyer, creator, creator_amount)
+                            if platform_fee > 0:
+                                mock_system.transfer_eth(buyer, mock_system.accounts[0], platform_fee)  # Platform gets fee
+                            mock_system.transfer_ownership(token_id, buyer)
+                        
                         st.info(f"**Creator:** {creator}")
                         st.info(f"**Royalty Percentage:** {royalty_percent}%")
                         st.success(f"**Creator Receives:** {w3.from_wei(creator_amount, 'ether'):.4f} ETH")
                         st.success(f"**Platform Fee:** {w3.from_wei(platform_fee, 'ether'):.4f} ETH")
+                        st.balloons()
                         
                     except Exception as e:
                         st.error(f"Simulation failed: {str(e)}")
             
             else:  # Secondary Sale
                 seller = account_selector("Seller Address", accounts, default_index=1)
+                buyer = account_selector("Buyer Address", accounts, default_index=2)
                 sale_price = st.number_input("Sale Price (in ETH)", min_value=0.1, value=1.0, step=0.1)
                 sale_price_wei = w3.to_wei(sale_price, 'ether')
                 
@@ -1836,37 +1866,50 @@ def main():
                         royalty_amount = (sale_price_wei * royalty_percent) // 100
                         seller_amount = sale_price_wei - royalty_amount
                         
+                        if DEMO_MODE:
+                            # Transfer funds between accounts
+                            mock_system.transfer_eth(buyer, creator, royalty_amount)
+                            mock_system.transfer_eth(buyer, seller, seller_amount)
+                            mock_system.transfer_ownership(token_id, buyer)
+                        
                         st.info(f"**Creator:** {creator}")
                         st.info(f"**Royalty Percentage:** {royalty_percent}%")
                         st.success(f"**Royalty Amount:** {w3.from_wei(royalty_amount, 'ether'):.4f} ETH")
                         st.success(f"**Seller Receives:** {w3.from_wei(seller_amount, 'ether'):.4f} ETH")
+                        st.balloons()
                         
                     except Exception as e:
                         st.error(f"Simulation failed: {str(e)}")
+
+    # Finally, update tab4 to use the new get_artworks method:
 
     with tab4:
         st.header("Artwork Explorer")
         
         try:
-            token_count = registry.functions.getCurrentTokenId().call()
-            artworks = []
-            
-            for token_id in range(token_count):
-                try:
-                    owner = registry.functions.ownerOf(token_id).call()
-                    artwork_info = registry.functions.getArtworkInfo(token_id).call()
-                    
-                    artworks.append({
-                        'token_id': token_id,
-                        'owner': owner,
-                        'creator': artwork_info[0],
-                        'metadataURI': artwork_info[1],
-                        'royaltyPercentage': artwork_info[2],
-                        'isLicensed': artwork_info[3]
-                    })
-                except Exception as e:
-                    continue
-                    
+            if DEMO_MODE:
+                artworks = mock_system.get_artworks()
+                token_count = len(artworks)
+            else:
+                token_count = registry.functions.getCurrentTokenId().call()
+                artworks = []
+                
+                for token_id in range(token_count):
+                    try:
+                        owner = registry.functions.ownerOf(token_id).call()
+                        artwork_info = registry.functions.getArtworkInfo(token_id).call()
+                        
+                        artworks.append({
+                            'token_id': token_id,
+                            'owner': owner,
+                            'creator': artwork_info[0],
+                            'metadataURI': artwork_info[1],
+                            'royaltyPercentage': artwork_info[2],
+                            'isLicensed': artwork_info[3]
+                        })
+                    except Exception as e:
+                        continue
+                        
             if not artworks:
                 st.info("No artworks registered yet")
             else:
