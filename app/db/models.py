@@ -24,6 +24,7 @@ class UserBase(BaseModel):
     )] = Field(description="Public display name")
     full_name: Optional[str] = Field(None, max_length=100)
     role: UserRole = Field(default=UserRole.ARTIST)
+    is_active: bool = Field(default=True)  # <-- Add this here with default True
 
     model_config = ConfigDict(
         populate_by_name=True,  # Replaces allow_population_by_field_name
@@ -62,7 +63,9 @@ class UserUpdate(BaseModel):
         max_length=50,
         pattern=r"^[a-zA-Z0-9_]+$"
     )]] = None
-
+    role: Optional[str] = Field(None)
+    is_active: Optional[bool] = None 
+    
 class ArtworkBase(BaseModel):
     title: str = Field(..., max_length=100)
     description: Optional[str] = Field(None, max_length=500)

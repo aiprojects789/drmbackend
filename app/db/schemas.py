@@ -3,6 +3,7 @@ from typing import Optional
 from datetime import datetime
 
 
+
 # class UserSchema(BaseModel):
 #     email: str
 #     username: str
@@ -37,3 +38,8 @@ class WalletSchema(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class InfoRequestBody(BaseModel):
+    message: str
+    requested_by: Optional[str] = None  # Example optional field
