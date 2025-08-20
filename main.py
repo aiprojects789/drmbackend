@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request,Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.exceptions import RequestValidationError
@@ -17,15 +17,20 @@ def create_app() -> FastAPI:
         description="Digital Rights Management for Artworks",
         version="1.0.0"
     )
+    @app.get("/favicon.ico")
+    async def favicon():
+        return Response(status_code=204)  # No content
 
     # CORS Configuration
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=["http://localhost:5173",  # React dev server (Vite)
+        "http://127.0.0.1:5173"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+   
 
     # Middleware to ensure MongoDB connection on every request (Vercel-safe)
     @app.middleware("http")
@@ -101,4 +106,10 @@ async def shutdown_db():
     """Close database connection"""
     await close_mongo_connection()
 
+
+
 app = create_app()
+
+from fastapi.staticfiles import StaticFiles
+
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")

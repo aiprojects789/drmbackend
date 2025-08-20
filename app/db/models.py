@@ -47,7 +47,7 @@ class UserOut(BaseModel):
     email: EmailStr
     username: str
     full_name: Optional[str]
-    role: UserRole
+    role: Optional[str] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
