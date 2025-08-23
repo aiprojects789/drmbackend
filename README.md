@@ -5,5 +5,6 @@ Try running some of the following tasks:
 
 ```shell
 npx hardhat node
-npx hardhat run scripts/deploy_all.js --network mumbai
-streamlit run .\app.py 
+npx hardhat run scripts/deploy.js --network localhost    or    sepolia
+
+
