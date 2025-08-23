@@ -1,0 +1,15 @@
+fastapi==0.104.1
+uvicorn==0.24.0
+motor
+pydantic
+web3
+python-multipart
+python-jose[cryptography]
+passlib[bcrypt]
+python-dotenv
+httpx
+typing-extensions
+pydantic-settings
+setuptools
+ipfshttpclient
+Pilllow
