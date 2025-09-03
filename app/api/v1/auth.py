@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Body
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from datetime import datetime, timedelta    
-from app.db.models import ForgotPasswordRequest, UserEmailRequest, UserCreate, UserOut, Token  
+from app.db.models import ForgotPasswordRequest, UserEmailRequest, UserCreate, UserOut, Token,WalletConnectRequest  
 from app.core.security import (
     create_access_token, 
     get_password_hash, 
@@ -30,6 +30,70 @@ otp_store = {}  # In-memory OTP store
 # OAuth2 scheme for token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
+# ---------------- CONNECT WALLET ----------------
+# def get_user_email(current_user: dict) -> str:
+#     return current_user.get("email") or current_user.get("sub")
+
+
+
+
+
+@router.post("/connect-wallet", response_model=Token)
+async def connect_wallet(payload: WalletConnectRequest, current_user: dict = Depends(get_current_user)):
+    wallet_address = payload.wallet_address
+    if not wallet_address:
+        raise HTTPException(status_code=400, detail="Wallet address is required")
+    
+    # rest of your code unchanged...
+
+    
+    # Safely get user's email
+    user_email = current_user.get("email") or current_user.get("sub")
+    if not user_email:
+        raise HTTPException(status_code=400, detail="Cannot identify user email")
+
+    await connect_to_mongo()
+    user_collection = get_user_collection()
+    
+    # Update wallet address in MongoDB
+    result = await user_collection.update_one(
+        {"email": user_email},
+        {"$set": {"wallet_address": wallet_address, "updated_at": datetime.utcnow()}}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Create a new JWT for this user
+    access_token_expires = timedelta(hours=24)
+    access_token = create_access_token(
+        data={
+            "sub": user_email,
+            "user_id": str(current_user.get("_id", "")),
+            "wallet_address": wallet_address,
+            "role": current_user.get("role", "user")
+        },
+        expires_delta=access_token_expires
+    )
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": str(current_user.get("_id", "")),
+            "wallet_address": wallet_address,
+            "email": user_email,
+            "username": current_user.get("username", ""),
+            "is_verified": current_user.get("is_verified", False),
+            "profile_image": current_user.get("profile_image", ""),
+            "bio": current_user.get("bio", ""),
+            "created_at": current_user.get("created_at"),
+            "updated_at": datetime.utcnow()
+        }
+    }
+
+
+
 @router.post("/signup", response_model=UserOut)
 async def signup(user: UserCreate):
     try:
@@ -52,7 +116,7 @@ async def signup(user: UserCreate):
             "role": "user",  # Default role is user
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow(),
-            "wallet_address": None
+            "wallet_address": user.wallet_address
         }
 
         await user_collection.insert_one(user_data)
@@ -67,51 +131,6 @@ async def signup(user: UserCreate):
             detail="Registration failed"
         )
 
-@router.post("/admin/signup", response_model=UserOut)
-async def admin_signup(user: UserCreate, current_user: dict = Depends(get_current_user)):
-    """Admin-only endpoint to create new admin users"""
-    # Check if current user is admin
-    if current_user.get("role") != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can create admin accounts"
-        )
-    
-    try:
-        await connect_to_mongo()
-        user_collection = get_user_collection()
-
-        if await user_collection.find_one({"email": user.email}):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
-            )
-
-        user_data = {
-            "_id": str(ObjectId()),
-            "email": user.email,
-            "username": user.username,
-            "full_name": user.full_name,
-            "hashed_password": get_password_hash(user.password),
-            "is_active": True,
-            "role": "admin",  # Admin role
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow(),
-            "wallet_address": None
-        }
-
-        await user_collection.insert_one(user_data)
-        logger.info(f"Admin user created: {user.email} by {current_user['email']}")
-        return UserOut(**user_data)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Admin signup error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Admin registration failed"
-        )
 
 async def authenticate_user(email: str, password: str):
     try:

@@ -1,357 +1,231 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Form, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, Form, UploadFile, File, Query
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 from app.core.security import get_current_user
 from app.db.database import get_artwork_collection
 from app.db.schemas import ArtworkSchema
-from app.core.ipfs_service import upload_to_ipfs
-from app.core.blockchain_service import mint_nft
+from services.web3_service import web3_service
 import logging
-import os
-from pathlib import Path
-
-
+from PIL import Image
+import io
+from app.db.models import (
+    ArtworkCreate, ArtworkUpdate, ArtworkBase as Artwork, ArtworkInDB,
+    ArtworkPublic, ArtworkListResponse, User
+)
+from app.core.config import settings
+import json
+import aiohttp
+import asyncio
 
 router = APIRouter(prefix="/artwork", tags=["artwork"])
 logger = logging.getLogger(__name__)
 
 
+# ✅ Image Processing Class
+class ImageProcessor:
+    @staticmethod
+    async def process_image(image_data: bytes, max_size: int = 5 * 1024 * 1024) -> bytes:
+        try:
+            img = Image.open(io.BytesIO(image_data))
+
+            if img.mode in ('RGBA', 'LA'):
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[-1])
+                img = background
+
+            max_dimension = 2000
+            if max(img.size) > max_dimension:
+                ratio = max_dimension / max(img.size)
+                new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+            output = io.BytesIO()
+            img.save(output, format='JPEG', quality=85, optimize=True)
+            processed_data = output.getvalue()
+
+            return processed_data
+        except Exception as e:
+            logger.error(f"Image processing failed: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Image processing failed: {str(e)}")
 
 
-UPLOAD_FOLDER = Path("uploads")
-UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
+# ✅ IPFS Upload Service
+class IPFSService:
+    @staticmethod
+    async def upload_to_ipfs(file_data: bytes, filename: str) -> str:
+        """Stub for IPFS upload (Pinata/NFT.Storage/Web3.Storage)"""
+        # Just demo: always return dummy URI
+        return f"ipfs://demo/{filename}"
 
-@router.post("/upload", response_model=ArtworkSchema)
-async def upload_artwork(
+
+# ✅ Register artwork with image
+@router.post("/register-with-image")
+async def register_artwork_with_image(
     title: str = Form(...),
-    description: str = Form(None),
-    price: float = Form(...),
-    royalty_percentage: float = Form(...),
-    file: UploadFile = File(...),
-    current_user: dict = Depends(get_current_user)
+    description: Optional[str] = Form(None),
+    royalty_percentage: int = Form(...),
+    image: UploadFile = File(...),
+    current_user: User = Depends(get_current_user)
 ):
     try:
-        if not file.content_type.startswith('image/'):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Only image files are allowed"
-            )
+        if not 0 <= royalty_percentage <= 2000:
+            raise HTTPException(status_code=400, detail="Royalty must be between 0-2000 basis points")
 
-        # Read file data once
-        file_bytes = await file.read()
+        image_data = await image.read()
+        if len(image_data) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Image file too large (max 10MB)")
 
-        # Save locally
-        file_ext = file.filename.split(".")[-1]
-        filename = f"{datetime.utcnow().timestamp()}.{file_ext}"
-        file_path = UPLOAD_FOLDER / filename
-        with open(file_path, "wb") as buffer:
-            buffer.write(file_bytes)
+        processed_image_data = await ImageProcessor.process_image(image_data)
+        image_ipfs_uri = await IPFSService.upload_to_ipfs(processed_image_data, image.filename)
 
-        # Upload to IPFS using file bytes
-        ipfs_hash = await upload_to_ipfs(file_bytes)
-
-        # Mint NFT
-        tx_hash = await mint_nft(
-            current_user.get("wallet_address", "0x0"),
-            title,
-            ipfs_hash,
-            price,
-            royalty_percentage
-        )
-
-        # Save to DB (local path for image)
-        artwork_data = {
-            "title": title,
+        metadata = {
+            "name": title,
             "description": description,
-            "image": f"/uploads/{filename}",  # so frontend can access directly
-            "ipfs_hash": ipfs_hash,
-            "blockchain_tx": tx_hash,
-            "price": price,
-            "royalty_percentage": royalty_percentage,
-            "artist_id": current_user["user_id"],
-            "artist_email": current_user["sub"],
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow(),
-            "is_verified": False,
-            "status": "pending"
+            "image": image_ipfs_uri,
+            "attributes": {
+                "royalty_percentage": royalty_percentage,
+                "creator": current_user["wallet_address"],
+                "created_at": datetime.utcnow().isoformat()
+            }
         }
 
-        artwork_collection = get_artwork_collection()
-        result = await artwork_collection.insert_one(artwork_data)
-        created_artwork = await artwork_collection.find_one({"_id": result.inserted_id})
+        metadata_bytes = json.dumps(metadata).encode('utf-8')
+        metadata_uri = await IPFSService.upload_to_ipfs(metadata_bytes, "metadata.json")
 
-        return ArtworkSchema(**created_artwork)
+        tx_data = await web3_service.prepare_register_transaction(
+            metadata_uri,
+            royalty_percentage,
+            from_address=current_user["wallet_address"]
+        )
 
+        return {
+            "status": "success",
+            "transaction_data": tx_data,
+            "metadata_uri": metadata_uri,
+            "image_uri": image_ipfs_uri,
+            "royalty_percentage": royalty_percentage
+        }
+    except Exception as e:
+        logger.error(f"Registration with image failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
+
+
+# ✅ Confirm registration
+@router.post("/confirm-registration")
+async def confirm_registration(confirmation_data: dict, current_user: User = Depends(get_current_user)):
+    try:
+        artworks_collection = get_artwork_collection()
+
+        tx_receipt = await web3_service.get_transaction_receipt(confirmation_data["tx_hash"])
+        if not tx_receipt or tx_receipt.get("status") != 1:
+            raise HTTPException(status_code=400, detail="Blockchain transaction failed")
+
+        token_id = await web3_service.get_token_id_from_tx(confirmation_data["tx_hash"])
+        if not token_id:
+            raise HTTPException(status_code=400, detail="Could not determine token ID from transaction")
+
+        attributes = confirmation_data.get("attributes") or {}
+
+        artwork = ArtworkInDB(
+            token_id=token_id,
+            creator_address=current_user.wallet_address,
+            owner_address=current_user.wallet_address,
+            metadata_uri=confirmation_data["metadata_uri"],
+            royalty_percentage=confirmation_data["royalty_percentage"],
+            title=confirmation_data.get("title"),
+            description=confirmation_data.get("description"),
+            attributes=attributes,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+            tx_hash=confirmation_data["tx_hash"]
+        )
+
+        result = await artworks_collection.insert_one(artwork.model_dump(by_alias=True))
+
+        return {"success": True, "artwork_id": str(result.inserted_id), "token_id": token_id}
+    except Exception as e:
+        logger.error(f"Artwork confirmation failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to confirm artwork registration: {str(e)}")
+
+
+# ✅ List artworks
+
+# ✅ List artworks
+
+
+@router.get("/", response_model=ArtworkListResponse)
+async def list_artworks(
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    creator_address: Optional[str] = None,
+    owner_address: Optional[str] = None,
+):
+    try:
+        artworks_collection = get_artwork_collection()
+
+        # Build filter query
+        filter_query = {}
+        if creator_address:
+            filter_query["creator_address"] = creator_address.lower()
+        if owner_address:
+            filter_query["owner_address"] = owner_address.lower()
+
+        logger.debug(f"Filter query: {filter_query}")
+
+        # Count and pagination
+        total = await artworks_collection.count_documents(filter_query)
+        has_next = (page * size) < total
+        skip = (page - 1) * size
+
+        # Fetch documents
+        cursor = artworks_collection.find(filter_query).skip(skip).limit(size).sort("created_at", -1)
+        artworks_data = await cursor.to_list(length=size)
+        logger.debug(f"Fetched {len(artworks_data)} artworks from DB")
+
+        artworks = []
+        for doc in artworks_data:
+            try:
+                # Validate MongoDB document
+                db_model = ArtworkInDB.model_validate(doc)
+
+                # Dump with alias (id instead of _id)
+                data = db_model.model_dump(by_alias=True)
+                logger.debug(f"Model dump data: {data}")
+
+                # Convert into public response model
+                artworks.append(ArtworkPublic(**data))
+            except Exception as e:
+                logger.warning(f"Skipping invalid artwork: {e} | Raw doc: {doc}")
+                continue
+
+        return ArtworkListResponse(
+            artworks=artworks,
+            total=total,
+            page=page,
+            size=size,
+            has_next=has_next
+        )
+    except Exception as e:
+        logger.error(f"Error listing artworks: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to list artworks"
+        )
+
+
+# ✅ Get single artwork
+@router.get("/{token_id}", response_model=ArtworkPublic)
+async def get_artwork(token_id: int):
+    try:
+        artworks_collection = get_artwork_collection()
+        artwork_doc = await artworks_collection.find_one({"token_id": token_id})
+        if not artwork_doc:
+            raise HTTPException(status_code=404, detail="Artwork not found")
+
+        artwork = ArtworkInDB.validate_document(artwork_doc)
+        return ArtworkPublic.from_db_model(artwork)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Upload failed: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to upload artwork"
-        )
-
-# @router.post("/upload", response_model=ArtworkSchema)
-# async def upload_artwork(
-#     title: str = Form(...),
-#     description: str = Form(None),
-#     price: float = Form(...),
-#     royalty_percentage: float = Form(...),
-#     file: UploadFile = File(...),
-#     current_user: dict = Depends(get_current_user)
-# ):
-#     try:
-#         # Verify file is an image
-#         if not file.content_type.startswith('image/'):
-#             raise HTTPException(
-#                 status_code=status.HTTP_400_BAD_REQUEST,
-#                 detail="Only image files are allowed"
-#             )
-        
-#         ipfs_hash = await upload_to_ipfs(file)
-#         tx_hash = await mint_nft(
-#             current_user.get("wallet_address", "0x0"),
-#             title,
-#             ipfs_hash,
-#             price,
-#             royalty_percentage
-#         )
-        
-#         artwork_data = {
-#             "title": title,
-#             "description": description,
-#             "ipfs_hash": ipfs_hash,
-#             "blockchain_tx": tx_hash,
-#             "price": price,
-#             "royalty_percentage": royalty_percentage,
-#             "artist_id": current_user["user_id"],
-#             "artist_email": current_user["sub"],
-#             "created_at": datetime.utcnow(),
-#             "updated_at": datetime.utcnow(),
-#             "is_verified": False,
-#             "status": "pending" # <-- ye line add karo
-#         }
-        
-#         artwork_collection = get_artwork_collection()
-#         result = await artwork_collection.insert_one(artwork_data)
-#         created_artwork = await artwork_collection.find_one({"_id": result.inserted_id})
-        
-#         return ArtworkSchema(**created_artwork)
-        
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         logger.error(f"Upload failed: {str(e)}", exc_info=True)
-#         raise HTTPException(
-#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#             detail="Failed to upload artwork"
-#         )
-
-
-
-
-@router.get("/my-artwork", response_model=List[ArtworkSchema])
-async def get_my_artwork(current_user: dict = Depends(get_current_user)):
-    try:
-        artworks = []
-        async for artwork in get_artwork_collection().find({"artist_id": current_user["user_id"]}):
-            artworks.append(ArtworkSchema(**artwork))
-        return artworks
-    except Exception as e:
-        logger.error(f"Failed to fetch artwork: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch artwork"
-        )
-
-
-# from fastapi import APIRouter, Depends, HTTPException, status, Form, UploadFile, File
-# from datetime import datetime
-# from typing import List, Optional
-# from app.core.security import get_current_user
-# from app.db.database import get_artwork_collection, connect_to_mongo
-# from app.db.schemas import ArtworkSchema
-# from app.core.ipfs_service import upload_to_ipfs
-# from app.core.blockchain_service import mint_nft
-# import logging
-# from bson import ObjectId
-
-# router = APIRouter(prefix="/artwork", tags=["artwork"])
-# logger = logging.getLogger(__name__)
-
-# # Constants
-# ALLOWED_CONTENT_TYPES = [
-#     'image/jpeg',
-#     'image/png',
-#     'image/gif',
-#     'image/webp'
-# ]
-
-# @router.post("/upload", response_model=ArtworkSchema)
-# async def upload_artwork(
-#     title: str = Form(...),
-#     description: Optional[str] = Form(None),
-#     price: float = Form(...),
-#     royalty_percentage: float = Form(...),
-#     file: UploadFile = File(...),
-#     current_user: dict = Depends(get_current_user)
-# ):
-#     """
-#     Upload artwork to IPFS, mint NFT, and store metadata
-#     """
-#     try:
-#         # Verify file type
-#         if file.content_type not in ALLOWED_CONTENT_TYPES:
-#             logger.warning(f"Invalid file type attempted: {file.content_type}")
-#             raise HTTPException(
-#                 status_code=status.HTTP_400_BAD_REQUEST,
-#                 detail=f"Only image files are allowed (JPEG, PNG, GIF, WEBP)"
-#             )
-
-#         # Verify wallet address exists
-#         wallet_address = current_user.get("wallet_address")
-#         if not wallet_address:
-#             logger.error(f"User {current_user['email']} has no wallet address")
-#             raise HTTPException(
-#                 status_code=status.HTTP_400_BAD_REQUEST,
-#                 detail="No wallet address associated with account"
-#             )
-
-#         # Ensure database connection
-#         await connect_to_mongo()
-
-#         # Upload to IPFS
-#         logger.info(f"Uploading artwork to IPFS for user {current_user['email']}")
-#         ipfs_hash = await upload_to_ipfs(file)
-#         logger.debug(f"IPFS hash received: {ipfs_hash}")
-
-#         # Mint NFT
-#         logger.info("Minting NFT on blockchain...")
-#         tx_hash = await mint_nft(
-#             wallet_address,
-#             title,
-#             ipfs_hash,
-#             price,
-#             royalty_percentage
-#         )
-#         logger.debug(f"Transaction hash: {tx_hash}")
-
-#         # Store artwork metadata
-#         artwork_data = ArtworkCreate(
-#             title=title,
-#             description=description,
-#             ipfs_hash=ipfs_hash,
-#             blockchain_tx=tx_hash,
-#             price=price,
-#             royalty_percentage=royalty_percentage,
-#             artist_id=current_user["user_id"],
-#             artist_email=current_user["email"],
-#             created_at=datetime.utcnow(),
-#             updated_at=datetime.utcnow(),
-#             is_verified=False
-#         )
-
-#         artwork_collection = get_artwork_collection()
-#         result = await artwork_collection.insert_one(artwork_data.dict())
-#         created_artwork = await artwork_collection.find_one({"_id": result.inserted_id})
-
-#         logger.info(f"Artwork created with ID: {result.inserted_id}")
-#         return ArtworkSchema(**created_artwork)
-
-#     except HTTPException as he:
-#         logger.warning(f"HTTPException in upload_artwork: {he.detail}")
-#         raise
-#     except Exception as e:
-#         logger.error(f"Unexpected error in upload_artwork: {str(e)}", exc_info=True)
-#         raise HTTPException(
-#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#             detail="Failed to process artwork upload"
-#         )
-
-# @router.get("/my-artwork", response_model=List[ArtworkSchema])
-# async def get_my_artwork(current_user: dict = Depends(get_current_user)):
-#     """
-#     Get all artwork for the current user
-#     """
-#     try:
-#         await connect_to_mongo()
-#         artwork_collection = get_artwork_collection()
-        
-#         logger.info(f"Fetching artwork for user {current_user['email']}")
-#         artworks = []
-#         async for artwork in artwork_collection.find({"artist_id": current_user["user_id"]}):
-#             artworks.append(ArtworkSchema(**artwork))
-        
-#         logger.debug(f"Found {len(artworks)} artworks")
-#         return artworks
-
-#     except Exception as e:
-#         logger.error(f"Error fetching artwork: {str(e)}", exc_info=True)
-#         raise HTTPException(
-#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#             detail="Failed to retrieve artwork"
-#         )
-
-# @router.get("/{artwork_id}", response_model=ArtworkSchema)
-# async def get_artwork_details(artwork_id: str):
-#     """
-#     Get details for a specific artwork
-#     """
-#     try:
-#         await connect_to_mongo()
-#         artwork_collection = get_artwork_collection()
-        
-#         artwork = await artwork_collection.find_one({"_id": ObjectId(artwork_id)})
-#         if not artwork:
-#             logger.warning(f"Artwork not found: {artwork_id}")
-#             raise HTTPException(
-#                 status_code=status.HTTP_404_NOT_FOUND,
-#                 detail="Artwork not found"
-#             )
-            
-#         return ArtworkSchema(**artwork)
-        
-#     except Exception as e:
-#         logger.error(f"Error fetching artwork details: {str(e)}")
-#         raise HTTPException(
-#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#             detail="Failed to retrieve artwork details"
-#         )
-
-# @router.delete("/{artwork_id}")
-# async def delete_artwork(
-#     artwork_id: str,
-#     current_user: dict = Depends(get_current_user)
-# ):
-#     """
-#     Delete artwork (only by owner)
-#     """
-#     try:
-#         await connect_to_mongo()
-#         artwork_collection = get_artwork_collection()
-        
-#         # Verify artwork exists and belongs to user
-#         artwork = await artwork_collection.find_one({
-#             "_id": ObjectId(artwork_id),
-#             "artist_id": current_user["user_id"]
-#         })
-        
-#         if not artwork:
-#             logger.warning(
-#                 f"Delete attempt failed for artwork {artwork_id} by user {current_user['email']}"
-#             )
-#             raise HTTPException(
-#                 status_code=status.HTTP_404_NOT_FOUND,
-#                 detail="Artwork not found or not owned by user"
-#             )
-            
-#         await artwork_collection.delete_one({"_id": ObjectId(artwork_id)})
-#         logger.info(f"Artwork deleted: {artwork_id}")
-#         return {"message": "Artwork deleted successfully"}
-        
-#     except Exception as e:
-#         logger.error(f"Error deleting artwork: {str(e)}")
-#         raise HTTPException(
-#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#             detail="Failed to delete artwork"
-#         )
+        logger.error(f"Error getting artwork {token_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get artwork")
