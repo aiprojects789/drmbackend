@@ -10,12 +10,16 @@ from PIL import Image
 import io
 from app.db.models import (
     ArtworkCreate, ArtworkUpdate, ArtworkBase as Artwork, ArtworkInDB,
-    ArtworkPublic, ArtworkListResponse, User
+    ArtworkPublic, ArtworkListResponse, User, SaleConfirmation,
+    TransactionCreate, TransactionType, TransactionStatus, ContractCallRequest, ContractCallResponse
 )
 from app.core.config import settings
 import json
 import aiohttp
 import asyncio
+import re
+from bson import ObjectId
+
 
 router = APIRouter(prefix="/artwork", tags=["artwork"])
 logger = logging.getLogger(__name__)
@@ -128,8 +132,8 @@ async def confirm_registration(confirmation_data: dict, current_user: User = Dep
 
         artwork = ArtworkInDB(
             token_id=token_id,
-            creator_address=current_user.wallet_address,
-            owner_address=current_user.wallet_address,
+            creator_address=current_user["wallet_address"],
+            owner_address=current_user["wallet_address"],
             metadata_uri=confirmation_data["metadata_uri"],
             royalty_percentage=confirmation_data["royalty_percentage"],
             title=confirmation_data.get("title"),
@@ -149,10 +153,6 @@ async def confirm_registration(confirmation_data: dict, current_user: User = Dep
 
 
 # ✅ List artworks
-
-# ✅ List artworks
-
-
 @router.get("/", response_model=ArtworkListResponse)
 async def list_artworks(
     page: int = Query(1, ge=1),
@@ -229,3 +229,437 @@ async def get_artwork(token_id: int):
     except Exception as e:
         logger.error(f"Error getting artwork {token_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get artwork")
+
+
+# ✅ Get artwork blockchain info
+@router.get("/{token_id}/blockchain", response_model=dict)
+async def get_artwork_blockchain_info(token_id: int):
+    try:
+        artwork_info = await web3_service.get_artwork_info(token_id)
+        owner = await web3_service.get_artwork_owner(token_id)
+
+        if not artwork_info:
+            raise HTTPException(status_code=404, detail="Artwork not found on blockchain")
+
+        return {
+            "token_id": token_id,
+            "creator": artwork_info["creator"],
+            "owner": owner,
+            "metadata_uri": artwork_info["metadata_uri"],
+            "royalty_percentage": artwork_info["royalty_percentage"],
+            "is_licensed": artwork_info["is_licensed"]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting blockchain info for artwork {token_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get blockchain information")
+
+
+
+@router.put("/{token_id}")
+async def update_artwork(
+    token_id: int,
+    artwork_update: ArtworkUpdate,
+    current_user: User = Depends(get_current_user)
+):
+    try:
+        artworks_collection = get_artwork_collection()
+        artwork_doc = await artworks_collection.find_one({"token_id": token_id})
+        if not artwork_doc:
+            raise HTTPException(status_code=404, detail="Artwork not found")
+
+        artwork = ArtworkInDB.model_validate(artwork_doc)
+        if artwork.owner_address != current_user["wallet_address"]:
+            raise HTTPException(status_code=403, detail="Only owner can update")
+
+        update_data = artwork_update.model_dump(exclude_unset=True)
+        update_data["updated_at"] = datetime.utcnow()
+
+        await artworks_collection.update_one({"token_id": token_id}, {"$set": update_data})
+
+        updated_doc = await artworks_collection.find_one({"token_id": token_id})
+        updated_artwork = ArtworkInDB.model_validate(updated_doc)
+        return ArtworkPublic.from_db_model(updated_artwork)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating artwork {token_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to update artwork")
+
+
+# --- Test Contract Endpoint ---
+@router.post("/test-contract", response_model=ContractCallResponse)
+async def test_contract(request: ContractCallRequest):
+    try:
+        # ✅ Simulate contract call (replace with real Web3 logic later)
+        result = {
+            "function": request.function_name,
+            "params": request.parameters,
+            "from": request.from_address,
+            "value": request.value
+        }
+
+        return ContractCallResponse(
+            success=True,
+            result=result,
+            tx_hash="0x" + "abc123".ljust(64, "0")  # dummy tx hash
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/debug/contract-abi")
+async def debug_contract_abi():
+    """Debug contract ABI compatibility"""
+    try:
+        if web3_service.demo_mode:
+            return {
+                "status": "demo_mode",
+                "message": "Running in demo mode - no real contract testing"
+            }
+        verification = await web3_service.verify_contract_abi()
+        return verification
+    except Exception as e:
+        logger.error(f"Contract ABI debug failed: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "message": str(e),
+            "error_type": type(e).__name__
+        }
+
+@router.get("/debug/balance/{wallet_address}")
+async def debug_wallet_balance(wallet_address: str):
+    """Check wallet balance on Sepolia"""
+    try:
+        if web3_service.demo_mode:
+            return {"status": "demo_mode", "balance": "100.0 ETH (mock)"}
+        if not web3_service.w3:
+            return {"status": "error", "message": "Web3 not connected"}
+        wallet_address = web3_service.w3.to_checksum_address(wallet_address)
+        balance_wei = web3_service.w3.eth.get_balance(wallet_address)
+        balance_eth = web3_service.w3.from_wei(balance_wei, 'ether')
+        gas_price = web3_service.w3.eth.gas_price
+        estimated_gas = 500000
+        gas_cost_wei = gas_price * estimated_gas
+        gas_cost_eth = web3_service.w3.from_wei(gas_cost_wei, 'ether')
+        sufficient_balance = balance_wei >= gas_cost_wei
+        return {
+            "status": "success",
+            "wallet_address": wallet_address,
+            "balance_wei": str(balance_wei),
+            "balance_eth": f"{balance_eth:.6f}",
+            "gas_price_gwei": web3_service.w3.from_wei(gas_price, 'gwei'),
+            "estimated_gas_cost_eth": f"{gas_cost_eth:.6f}",
+            "sufficient_balance": sufficient_balance,
+            "chain_id": web3_service.w3.eth.chain_id
+        }
+    except Exception as e:
+        logger.error(f"Wallet balance debug failed: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "message": str(e),
+            "error_type": type(e).__name__
+        }
+
+
+@router.get("/owner/{owner_address}", response_model=ArtworkListResponse)
+async def get_artworks_by_owner(
+    owner_address: str,
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100)
+):
+    try:
+        artworks_collection = get_artwork_collection()
+
+        filter_query = {
+            "owner_address": {
+                "$regex": f"^{re.escape(owner_address)}$",
+                "$options": "i"
+            }
+        }
+
+        total = await artworks_collection.count_documents(filter_query)
+        has_next = (page * size) < total
+        skip = (page - 1) * size
+
+        cursor = artworks_collection.find(filter_query).skip(skip).limit(size).sort("created_at", -1)
+        artworks_data = await cursor.to_list(length=size)
+
+        artworks = []
+        for doc in artworks_data:
+            try:
+                db_model = ArtworkInDB.model_validate(doc)
+                artworks.append(ArtworkPublic.from_db_model(db_model))
+            except Exception as e:
+                logger.warning(f"Skipping invalid artwork document: {e}")
+                continue
+
+        return ArtworkListResponse(
+            artworks=artworks,
+            total=total,
+            page=page,
+            size=size,
+            has_next=has_next
+        )
+    except Exception as e:
+        logger.error(f"Error getting artworks by owner {owner_address}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get artworks")
+
+
+@router.get("/creator/{creator_address}", response_model=ArtworkListResponse)
+async def get_artworks_by_creator(
+    creator_address: str,
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100)
+):
+    try:
+        artworks_collection = get_artwork_collection()
+
+        filter_query = {
+            "creator_address": {
+                "$regex": f"^{re.escape(creator_address)}$",
+                "$options": "i"
+            }
+        }
+
+        total = await artworks_collection.count_documents(filter_query)
+        has_next = (page * size) < total
+        skip = (page - 1) * size
+
+        cursor = artworks_collection.find(filter_query).skip(skip).limit(size).sort("created_at", -1)
+        artworks_data = await cursor.to_list(length=size)
+
+        artworks = []
+        for doc in artworks_data:
+            try:
+                db_model = ArtworkInDB.model_validate(doc)
+                artworks.append(ArtworkPublic.from_db_model(db_model))
+            except Exception as e:
+                logger.warning(f"Skipping invalid artwork document: {e}")
+                continue
+
+        return ArtworkListResponse(
+            artworks=artworks,
+            total=total,
+            page=page,
+            size=size,
+            has_next=has_next
+        )
+    except Exception as e:
+        logger.error(f"Error getting artworks by creator {creator_address}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get artworks")
+
+
+@router.post("/debug/test-registration")
+async def debug_test_registration(
+    test_data: dict,
+    current_user: User = Depends(get_current_user)
+):
+    """Test registration preparation without actually registering"""
+    try:
+        metadata_uri = test_data.get("metadata_uri", "ipfs://QmTest123")
+        royalty_percentage = test_data.get("royalty_percentage", 1000)
+        logger.info(f"🧪 Testing registration preparation...")
+        logger.info(f"📝 Test inputs: {metadata_uri}, {royalty_percentage}, {current_user.wallet_address}")
+        tx_data = await web3_service.prepare_register_transaction(
+            metadata_uri,
+            royalty_percentage,
+            current_user.wallet_address
+        )
+        return {
+            "status": "success",
+            "message": "Registration preparation successful",
+            "transaction_data": tx_data,
+            "test_inputs": {
+                "metadata_uri": metadata_uri,
+                "royalty_percentage": royalty_percentage,
+                "wallet_address": current_user.wallet_address
+            }
+        }
+    except Exception as e:
+        logger.error(f"Test registration failed: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "message": str(e),
+            "error_type": type(e).__name__,
+            "details": {
+                "demo_mode": getattr(web3_service, 'demo_mode', None),
+                "connected": getattr(web3_service, 'connected', None),
+                "contract_address": getattr(settings, 'CONTRACT_ADDRESS', None)
+            }
+        }
+
+@router.get("/debug/ipfs-config")
+async def debug_ipfs_config(current_user: User = Depends(get_current_user)):
+    """Debug endpoint to check IPFS configuration"""
+    config_status = {
+        "pinata_configured": bool(settings.PINATA_API_KEY and settings.PINATA_SECRET_API_KEY),
+        "nft_storage_configured": bool(settings.NFT_STORAGE_API_KEY),
+        "web3_storage_configured": bool(settings.WEB3_STORAGE_API_KEY),
+        "file_size_limit": "10MB",
+        "image_processing": "Enabled (resize + compression)"
+    }
+    test_results = {}
+    if config_status["pinata_configured"]:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    'https://api.pinata.cloud/data/testAuthentication',
+                    headers={
+                        'pinata_api_key': settings.PINATA_API_KEY,
+                        'pinata_secret_api_key': settings.PINATA_SECRET_API_KEY,
+                    }
+                ) as response:
+                    test_results["pinata"] = {
+                        "status": response.status,
+                        "authenticated": response.status == 200
+                    }
+        except Exception as e:
+            test_results["pinata"] = {"error": str(e)}
+    return {
+        "config_status": config_status,
+        "connectivity_test": test_results,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+@router.get("/debug/owner-artworks/{owner_address}")
+async def debug_owner_artworks(owner_address: str):
+    """Debug endpoint to check what artworks exist for an owner"""
+    try:
+        artworks_collection = get_artwork_collection()
+        normalized_address = owner_address.lower()
+        artworks = await artworks_collection.find({"owner_address": normalized_address}).to_list(length=100)
+        all_artworks = await artworks_collection.find({}).to_list(length=1000)
+        possible_matches = []
+        for art in all_artworks:
+            art_owner = art.get('owner_address', '').lower()
+            if art_owner == normalized_address:
+                possible_matches.append({
+                    "token_id": art.get('token_id'),
+                    "owner_address": art.get('owner_address'),
+                    "creator_address": art.get('creator_address'),
+                    "title": art.get('title')
+                })
+        return {
+            "requested_address": owner_address,
+            "normalized_address": normalized_address,
+            "exact_matches_count": len(artworks),
+            "exact_matches": [
+                {
+                    "token_id": art.get('token_id'),
+                    "owner_address": art.get('owner_address'),
+                    "creator_address": art.get('creator_address'),
+                    "title": art.get('title')
+                }
+                for art in artworks
+            ],
+            "all_artworks_sample": [
+                {
+                    "token_id": art.get('token_id'),
+                    "owner_address": art.get('owner_address'),
+                    "creator_address": art.get('creator_address')
+                }
+                for art in all_artworks[:10]
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Debug artworks failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+# # --- Sale transaction preparation ---
+@router.post("/prepare-sale-transaction", response_model=dict)
+async def prepare_sale_transaction(
+    sale_data: dict,
+    current_user: User = Depends(get_current_user)
+):
+    try:
+        token_id = sale_data.get("token_id")
+        buyer_address = sale_data.get("buyer_address")
+        sale_price = sale_data.get("sale_price")
+        current_owner = sale_data.get("current_owner")
+
+        if not all([token_id, buyer_address, sale_price, current_owner]):
+            raise HTTPException(status_code=400, detail="Missing required sale parameters")
+
+        if not web3_service.w3:
+            raise HTTPException(status_code=500, detail="Web3 service not available")
+
+        buyer_address_checksum = web3_service.w3.to_checksum_address(buyer_address)
+        current_owner_checksum = web3_service.w3.to_checksum_address(current_owner)
+        sale_price_wei = web3_service.w3.to_wei(float(sale_price), 'ether')
+
+        tx_data = await web3_service.prepare_sale_transaction(
+            token_id=token_id,
+            buyer_address=buyer_address_checksum,
+            seller_address=current_owner_checksum,
+            sale_price_wei=sale_price_wei
+        )
+
+        return {
+            "transaction_data": tx_data,
+            "sale_details": {
+                "token_id": token_id,
+                "sale_price_eth": sale_price,
+                "sale_price_wei": str(sale_price_wei),
+                "current_owner": current_owner_checksum,
+                "buyer_address": buyer_address_checksum
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Sale preparation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to prepare sale transaction: {str(e)}")
+
+
+# --- Confirm sale ---
+@router.post("/confirm-sale", response_model=dict)
+async def confirm_sale(
+    sale_confirmation: SaleConfirmation,
+    current_user: User = Depends(get_current_user)
+):
+    try:
+        artworks_collection = get_artwork_collection()
+
+        tx_hash = sale_confirmation.tx_hash
+        token_id = sale_confirmation.token_id
+        buyer_address = sale_confirmation.buyer_address
+        seller_address = sale_confirmation.seller_address
+        sale_price = sale_confirmation.sale_price
+
+        tx_receipt = await web3_service.get_transaction_receipt(tx_hash)
+        if not tx_receipt or tx_receipt.get("status") != 1:
+            raise HTTPException(status_code=400, detail="Sale transaction failed or not found")
+
+        await artworks_collection.update_one(
+            {"token_id": token_id},
+            {"$set": {"owner_address": buyer_address.lower(), "updated_at": datetime.utcnow()}}
+        )
+
+        sale_transaction = TransactionCreate(
+            tx_hash=tx_hash,
+            from_address=seller_address,
+            to_address=buyer_address,
+            value=str(sale_price),
+            transaction_type=TransactionType.SALE,
+            status=TransactionStatus.CONFIRMED,
+            metadata={"token_id": token_id}
+        )
+
+        db = artworks_collection.database  # Get database from collection
+        await db.transactions.insert_one(sale_transaction.model_dump(by_alias=True))
+
+        return {
+            "success": True,
+            "message": "Sale confirmed successfully",
+            "new_owner": buyer_address,
+            "token_id": token_id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Sale confirmation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to confirm sale: {str(e)}")
+
+
+

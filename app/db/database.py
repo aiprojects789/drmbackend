@@ -81,4 +81,10 @@ def get_wallet_collection():
     """Get wallets collection with validation"""
     return get_db().wallets
 
+def get_license_collection():
+    """Get licenses collection with validation"""
+    return get_db().licenses
 
+def get_transaction_collection():
+    """Get transactions collection with validation"""
+    return get_db().transactions

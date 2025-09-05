@@ -120,82 +120,186 @@ class UserUpdate(BaseModel):
     
 
 
-from bson import ObjectId
-from pydantic import BaseModel
-from typing import Any
 
-class PyObjectId(ObjectId):
+    # Simple ObjectId handling for Pydantic v2
+class PyObjectId(str):
     @classmethod
-    def __get_validators__(cls):
-        yield cls.validate
+    def __get_pydantic_core_schema__(cls, source_type: Any, handler: GetCoreSchemaHandler) -> core_schema.CoreSchema:
+        return core_schema.with_info_after_validator_function(
+            cls.validate,
+            core_schema.str_schema(),
+            serialization=core_schema.to_string_ser_schema(),
+        )
 
     @classmethod
-    def validate(cls, v: Any) -> ObjectId:
+    def validate(cls, v: Any, info: core_schema.ValidationInfo) -> str:
         if isinstance(v, ObjectId):
-            return v
-        if isinstance(v, str) and ObjectId.is_valid(v):
-            return ObjectId(v)
-        raise ValueError(f"Invalid ObjectId: {v}")
+            return str(v)
+        if isinstance(v, str):
+            if ObjectId.is_valid(v):
+                return v
+            raise ValueError("Invalid ObjectId string")
+        raise ValueError("Invalid ObjectId type")
 
     @classmethod
-    def __get_pydantic_json_schema__(cls, core_schema):
-        """
-        Replaces __modify_schema__ in Pydantic v2.
-        Makes Swagger/OpenAPI show this field as a string.
-        """
-        return {
-            "type": "string",
-            "examples": ["64d2c4e5f12a3b0012345678"]
-        }
+    def __get_pydantic_json_schema__(cls, schema: JsonSchemaValue, handler) -> JsonSchemaValue:
+        schema.update(type="string", format="objectid")
+        return schema
+
+# Base model configuration
+class MongoModel(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+        arbitrary_types_allowed=True,
+        json_encoders={ObjectId: str}
+    )
+# License Type Enum
+class LicenseType(str, Enum):
+    PERSONAL = "PERSONAL"
+    COMMERCIAL = "COMMERCIAL"
+    EXCLUSIVE = "EXCLUSIVE"
+
 
 class ArtworkBase(BaseModel):
-    id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
-    token_id: int
-    creator_address: str
-    owner_address: str
-    metadata_uri: str
-    royalty_percentage: int
-    is_licensed: bool
-    title: str
-    description: str
-    attributes: dict
-    created_at: str
-    updated_at: str
+    """Base model shared by all artwork models"""
+    token_id: int = Field(..., gt=0, description="Unique blockchain token ID")
+    creator_address: str = Field(
+        ..., 
+        min_length=42, 
+        max_length=42,
+        pattern=r"^0x[a-fA-F0-9]{40}$",
+        description="Ethereum address of the creator"
+    )
+    owner_address: str = Field(
+        ..., 
+        min_length=42, 
+        max_length=42,
+        pattern=r"^0x[a-fA-F0-9]{40}$",
+        description="Current owner's Ethereum address"
+    )
+    metadata_uri: str = Field(
+        ..., 
+        pattern=r"^(ipfs://|https?://).+",
+        description="URI pointing to artwork metadata"
+    )
+    royalty_percentage: int = Field(
+        ..., 
+        ge=0, 
+        le=2000,
+        description="Royalty percentage in basis points (0-2000 = 0-20%)"
+    )
+    is_licensed: bool = Field(
+        default=False,
+        description="Whether the artwork is currently licensed"
+    )
+    title: Optional[str] = Field(
+        None, 
+        max_length=100,
+        description="Human-readable title of the artwork"
+    )
+    description: Optional[str] = Field(
+        None, 
+        max_length=1000,
+        description="Detailed description of the artwork"
+    )
+    attributes: Optional[dict] = Field(
+        None,
+        description="Additional attributes as key-value pairs"
+    )
 
-    class Config:
-        validate_by_name = True       # renamed from allow_population_by_field_name
-        arbitrary_types_allowed = True
-        json_encoders = {ObjectId: str}
+    model_config = ConfigDict(
+        populate_by_name=True,
+        arbitrary_types_allowed=True,
+        json_schema_extra={
+            "example": {
+                "token_id": 1,
+                "creator_address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+                "owner_address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+                "metadata_uri": "ipfs://QmXJZx...",
+                "royalty_percentage": 500,
+                "is_licensed": False,
+                "title": "Digital Masterpiece",
+                "description": "A beautiful digital artwork",
+                "attributes": {"color": "blue", "style": "abstract"}
+            }
+        }
+    )
 
 class ArtworkCreate(ArtworkBase):
-    pass
+    """Model for creating new artworks (excludes auto-generated fields)"""
+    token_id: Optional[int] = Field(None, gt=0)  # Will be generated
+    creator_address: Optional[str] = Field(None, min_length=42, max_length=42)  # Set from current user
+    owner_address: Optional[str] = Field(None, min_length=42, max_length=42)  # Set from current user
+    is_licensed: Optional[bool] = Field(False)  # Default value only
+    created_at: Optional[datetime] = None  # Will be set on creation
+    updated_at: Optional[datetime] = None  # Will be set on creation
 
-class ArtworkInDB(BaseModel):
-    id: PyObjectId = Field(..., alias="_id")
-    token_id: int
-    creator_address: str
-    owner_address: str
-    metadata_uri: str
-    royalty_percentage: int
-    is_licensed: bool
-    title: str
-    description: str
-    attributes: Dict
-    created_at: datetime
-    updated_at: datetime
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "metadata_uri": "ipfs://QmXJZx...",
+                "royalty_percentage": 500,
+                "title": "Digital Masterpiece",
+                "description": "A beautiful digital artwork",
+                "attributes": {"color": "blue", "style": "abstract"}
+            }
+        }
+    )
 
-    class Config:
-        allow_population_by_field_name = True
-        json_encoders = {ObjectId: str, datetime: lambda dt: dt.isoformat()}
+class ArtworkUpdate(BaseModel):
+    """Model for updating existing artworks (only updatable fields)"""
+    owner_address: Optional[str] = Field(
+        None, 
+        min_length=42, 
+        max_length=42,
+        pattern=r"^0x[a-fA-F0-9]{40}$",
+        description="New owner's Ethereum address"
+    )
+    is_licensed: Optional[bool] = Field(
+        None,
+        description="Update license status"
+    )
+    title: Optional[str] = Field(
+        None, 
+        max_length=100,
+        description="Updated title"
+    )
+    description: Optional[str] = Field(
+        None, 
+        max_length=1000,
+        description="Updated description"
+    )
+    updated_at: Optional[datetime] = Field(
+        None,
+        description="Will be set to current time on update"
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "owner_address": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+                "is_licensed": True,
+                "title": "Updated Title",
+                "description": "New description"
+            }
+        }
+    )
+
+class ArtworkInDB(ArtworkBase):
+    """Complete model as stored in database"""
+    id: ObjectId = Field(default_factory=ObjectId, alias="_id")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
     @classmethod
-    def validate_document(cls, doc):
-        try:
-            return cls.model_validate(doc)
-        except Exception as e:
-            print(f"Skipping invalid artwork: {e} | Raw doc: {doc}")
-            return None
-
+    def validate_document(cls, data: dict):
+        """Helper to handle MongoDB document validation"""
+        if '_id' in data and not isinstance(data['_id'], ObjectId):
+            try:
+                data['_id'] = ObjectId(data['_id'])
+            except:
+                data['_id'] = ObjectId()
+        return cls(**data)
 
 # --- Public-facing Model ---
 class ArtworkPublic(BaseModel):
@@ -217,18 +321,6 @@ class ArtworkPublic(BaseModel):
         data = db_model.model_dump(by_alias=True, exclude_none=True)
         data["id"] = str(data["_id"])
         return cls(**data)
-# --- Artwork Update Model ---
-class ArtworkUpdate(BaseModel):
-    owner_address: Optional[str] = Field(
-        None, min_length=42, max_length=42,
-        pattern=r"^0x[a-fA-F0-9]{40}$",
-        description="New owner's Ethereum address"
-    )
-    is_licensed: Optional[bool] = None
-    title: Optional[str] = Field(None, max_length=100)
-    description: Optional[str] = Field(None, max_length=1000)
-    updated_at: Optional[datetime] = None
-
 
 class WalletBase(BaseModel):
     address: Annotated[str, StringConstraints(pattern=r"^0x[a-fA-F0-9]{40}$")]
@@ -350,4 +442,273 @@ class ContractCallResponse(BaseModel):
     result: Optional[Any] = None
     error: Optional[str] = None
     tx_hash: Optional[str] = Field(None, min_length=66, max_length=66)
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+class LicenseBase(BaseModel):
+    """Base License model for API responses"""
+    license_id: int
+    token_id: int
+    licensee_address: str
+    licensor_address: str
+    start_date: datetime
+    end_date: datetime
+    terms_hash: str
+    license_type: str
+    is_active: bool
+    fee_paid: float
+    created_at: datetime
+    updated_at: datetime
+
+class LicenseInDB(BaseModel):
+    """License model for database storage"""
+    id: Optional[str] = Field(alias="_id", default=None)
+    license_id: int
+    token_id: int
+    licensee_address: str
+    licensor_address: str
+    start_date: datetime
+    end_date: datetime
+    terms_hash: str
+    license_type: str
+    is_active: bool = True
+    fee_paid: float
+    created_at: datetime
+    updated_at: datetime
+    transaction_data: Optional[Dict[str, Any]] = None
+    revoked_at: Optional[datetime] = None
+
+    class Config:
+        populate_by_name = True
+        arbitrary_types_allowed = True
+        json_encoders = {
+            ObjectId: str,
+            datetime: lambda v: v.isoformat()
+        }
+
+    @classmethod
+    def from_mongo(cls, data: dict):
+        """Create LicenseInDB from MongoDB document with robust error handling"""
+        try:
+            if not data:
+                raise ValueError("Empty document")
+            
+            # Handle ObjectId conversion
+            if "_id" in data and isinstance(data["_id"], ObjectId):
+                data["_id"] = str(data["_id"])
+            
+            # Ensure required fields exist
+            required_fields = [
+                "license_id", "token_id", "licensee_address", "licensor_address",
+                "start_date", "end_date", "terms_hash", "license_type", "fee_paid"
+            ]
+            
+            for field in required_fields:
+                if field not in data:
+                    raise ValueError(f"Missing required field: {field}")
+            
+            # Handle datetime fields
+            datetime_fields = ["start_date", "end_date", "created_at", "updated_at", "revoked_at"]
+            for field in datetime_fields:
+                if field in data and data[field] is not None:
+                    if isinstance(data[field], str):
+                        try:
+                            data[field] = datetime.fromisoformat(data[field].replace('Z', '+00:00'))
+                        except ValueError:
+                            # Try parsing with different formats
+                            from dateutil.parser import parse
+                            data[field] = parse(data[field])
+                    elif not isinstance(data[field], datetime):
+                        logger.warning(f"Unexpected type for {field}: {type(data[field])}")
+            
+            # Set defaults for optional fields
+            if "is_active" not in data:
+                data["is_active"] = True
+            if "created_at" not in data:
+                data["created_at"] = datetime.utcnow()
+            if "updated_at" not in data:
+                data["updated_at"] = datetime.utcnow()
+            
+            return cls(**data)
+            
+        except Exception as e:
+            logger.error(f"Failed to convert license document: {e}")
+            logger.error(f"Document data: {data}")
+            raise ValueError(f"Invalid license document: {str(e)}")
+
+    def model_dump(self, **kwargs):
+        """Override model_dump to handle MongoDB serialization"""
+        data = super().model_dump(**kwargs)
+        
+        # Convert ObjectId to string if present
+        if "_id" in data and isinstance(data["_id"], ObjectId):
+            data["_id"] = str(data["_id"])
+        
+        return data
+
+
+class License(BaseModel):
+    """License model for API responses (simplified from LicenseInDB)"""
+    license_id: int
+    token_id: int
+    licensee_address: str
+    licensor_address: str
+    start_date: datetime
+    end_date: datetime
+    terms_hash: str
+    license_type: str
+    is_active: bool
+    fee_paid: float
+    created_at: datetime
+    updated_at: datetime
+    revoked_at: Optional[datetime] = None
+
+    @classmethod
+    def from_mongo(cls, data: dict):
+        """Create License from MongoDB document - SIMPLIFIED VERSION"""
+        try:
+            # Create a copy to avoid modifying the original
+            license_data = dict(data)
+            
+            # Convert ObjectId to string if present
+            if '_id' in license_data:
+                license_data['id'] = str(license_data['_id'])
+                del license_data['_id']
+            
+            # Remove any fields that aren't in the License model
+            expected_fields = {
+                'license_id', 'token_id', 'licensee_address', 'licensor_address',
+                'start_date', 'end_date', 'terms_hash', 'license_type', 'is_active',
+                'fee_paid', 'created_at', 'updated_at', 'revoked_at'
+            }
+            
+            # Only keep fields that are in the License model
+            filtered_data = {k: v for k, v in license_data.items() if k in expected_fields}
+            
+            return cls(**filtered_data)
+            
+        except Exception as e:
+            logger.error(f"Failed to create License from mongo: {e}")
+            logger.error(f"Document data: {data}")
+            raise
+
+class LicenseListResponse(BaseModel):
+    """Response model for license listings"""
+    licenses: List[License]
+    total: int
+    page: int
+    size: int
+    has_next: bool
+
+# License Create Model
+class LicenseCreate(MongoModel):
+    token_id: int
+    licensee_address: str
+    duration_days: int
+    terms_hash: str
+    license_type: LicenseType
+
+
+
+class TransactionBase(BaseModel):
+    id: Optional[str] = Field(alias="_id", default=None)
+    tx_hash: str = Field(..., min_length=66, max_length=66)
+    from_address: str = Field(..., min_length=42, max_length=42)
+    to_address: Optional[str] = Field(None, min_length=42, max_length=42)
+    transaction_type: TransactionType
+    status: TransactionStatus = TransactionStatus.PENDING
+    gas_used: Optional[int] = Field(None, gt=0)
+    gas_price: Optional[int] = Field(None, gt=0)
+    value: Optional[float] = Field(None, ge=0)  # In ETH
+    block_number: Optional[int] = Field(None, gt=0)
+    metadata: Optional[dict] = {}
+
+class TransactionCreate(BaseModel):
+    tx_hash: str = Field(..., min_length=66, max_length=66)
+    from_address: str = Field(..., min_length=42, max_length=42)
+    to_address: Optional[str] = Field(None, min_length=42, max_length=42)
+    transaction_type: TransactionType
+    value: Optional[float] = Field(None, ge=0)
+    status: TransactionStatus = TransactionStatus.PENDING
+    metadata: Optional[dict] = {}
+
+    class Config:
+        use_enum_values = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
+
+class TransactionUpdate(BaseModel):
+    status: Optional[TransactionStatus] = None
+    gas_used: Optional[int] = Field(None, gt=0)
+    gas_price: Optional[int] = Field(None, gt=0)
+    block_number: Optional[int] = Field(None, gt=0)
+
+class TransactionInDB(TransactionCreate):
+    id: Optional[str] = Field(None, alias="_id")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    block_number: Optional[int] = None
+    gas_used: Optional[int] = None
+    
+    class Config:
+        populate_by_name = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
+    
+    @classmethod
+    def from_mongo(cls, data: dict):
+        """Convert MongoDB document to Pydantic model"""
+        if "_id" in data:
+            data["id"] = str(data["_id"])
+        return cls(**data)
+
+class TransactionPublic(TransactionBase):
+    id: str
+    created_at: datetime
+    updated_at: datetime
+
+class PaginatedResponse(BaseModel):
+    total: int = Field(..., ge=0)
+    page: int = Field(..., ge=1)
+    size: int = Field(..., ge=1, le=100)
+    has_next: bool
+
+class ArtworkListResponse(PaginatedResponse):
+    artworks: List[ArtworkPublic]
+    has_next: bool
+
+class TransactionListResponse(PaginatedResponse):
+    transactions: List[TransactionPublic]
+    has_next: bool
+
+class Web3ConnectionStatus(BaseModel):
+    connected: bool
+    account: Optional[str] = Field(None, min_length=42, max_length=42)
+    chain_id: Optional[str] = None
+    network_name: Optional[str] = None
+    balance: Optional[str] = None
+
+class ContractCallRequest(BaseModel):
+    function_name: str
+    parameters: List[Any] = []
+    from_address: Optional[str] = Field(None, min_length=42, max_length=42)
+    value: Optional[str] = Field(None, pattern=r"^[0-9]+$")
+
+class ContractCallResponse(BaseModel):
+    success: bool
+    result: Optional[Any] = None
+    error: Optional[str] = None
+    tx_hash: Optional[str] = Field(None, min_length=66, max_length=66)
+
+class TokenMetadata(BaseModel):
+    name: str
+    description: str
+    image: str
+    attributes: List[dict]
+    external_url: Optional[str] = None
+    animation_url: Optional[str] = None
 
