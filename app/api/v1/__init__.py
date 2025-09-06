@@ -7,7 +7,7 @@ from .contact import router as contact_router
 from .email import router as email_router
 from .licenses import router as license_router   # 👈 direct router import
 from .transactions import router as transactions_router  # 👈 agar file hai
-
+from .web3 import router as web3_router
 router = APIRouter()
 
 # Include all versioned routers
@@ -17,5 +17,6 @@ router.include_router(contact_router)
 router.include_router(artwork_router)
 router.include_router(license_router)
 router.include_router(transactions_router)
+router.include_router(web3_router)
 router.include_router(blockchain_router)
 router.include_router(admin_router)

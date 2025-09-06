@@ -610,42 +610,6 @@ class LicenseCreate(MongoModel):
     terms_hash: str
     license_type: LicenseType
 
-
-
-class TransactionBase(BaseModel):
-    id: Optional[str] = Field(alias="_id", default=None)
-    tx_hash: str = Field(..., min_length=66, max_length=66)
-    from_address: str = Field(..., min_length=42, max_length=42)
-    to_address: Optional[str] = Field(None, min_length=42, max_length=42)
-    transaction_type: TransactionType
-    status: TransactionStatus = TransactionStatus.PENDING
-    gas_used: Optional[int] = Field(None, gt=0)
-    gas_price: Optional[int] = Field(None, gt=0)
-    value: Optional[float] = Field(None, ge=0)  # In ETH
-    block_number: Optional[int] = Field(None, gt=0)
-    metadata: Optional[dict] = {}
-
-class TransactionCreate(BaseModel):
-    tx_hash: str = Field(..., min_length=66, max_length=66)
-    from_address: str = Field(..., min_length=42, max_length=42)
-    to_address: Optional[str] = Field(None, min_length=42, max_length=42)
-    transaction_type: TransactionType
-    value: Optional[float] = Field(None, ge=0)
-    status: TransactionStatus = TransactionStatus.PENDING
-    metadata: Optional[dict] = {}
-
-    class Config:
-        use_enum_values = True
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None
-        }
-
-class TransactionUpdate(BaseModel):
-    status: Optional[TransactionStatus] = None
-    gas_used: Optional[int] = Field(None, gt=0)
-    gas_price: Optional[int] = Field(None, gt=0)
-    block_number: Optional[int] = Field(None, gt=0)
-
 class TransactionInDB(TransactionCreate):
     id: Optional[str] = Field(None, alias="_id")
     created_at: datetime = Field(default_factory=datetime.utcnow)
