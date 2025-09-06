@@ -30,12 +30,6 @@ otp_store = {}  # In-memory OTP store
 # OAuth2 scheme for token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
-# ---------------- CONNECT WALLET ----------------
-# def get_user_email(current_user: dict) -> str:
-#     return current_user.get("email") or current_user.get("sub")
-
-
-
 
 
 @router.post("/connect-wallet", response_model=Token)
@@ -43,8 +37,6 @@ async def connect_wallet(payload: WalletConnectRequest, current_user: dict = Dep
     wallet_address = payload.wallet_address
     if not wallet_address:
         raise HTTPException(status_code=400, detail="Wallet address is required")
-    
-    # rest of your code unchanged...
 
     
     # Safely get user's email
@@ -93,33 +85,43 @@ async def connect_wallet(payload: WalletConnectRequest, current_user: dict = Dep
     }
 
 
-
 @router.post("/signup", response_model=UserOut)
 async def signup(user: UserCreate):
+    """User registration endpoint"""
     try:
         await connect_to_mongo()
         user_collection = get_user_collection()
 
+        # Check if email already exists
         if await user_collection.find_one({"email": user.email}):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email already registered"
             )
 
+        # Prepare user data
         user_data = {
             "_id": str(ObjectId()),
             "email": user.email,
             "username": user.username,
-            "full_name": user.full_name,
-            "hashed_password": get_password_hash(user.password),
+            "full_name": user.full_name if hasattr(user, "full_name") else "",
+            "role": "user",  # default role
             "is_active": True,
-            "role": "user",  # Default role is user
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow(),
-            "wallet_address": user.wallet_address
+            "wallet_address": None  # Not sent from UI
         }
 
+        # Hash password separately
+        hashed_password = get_password_hash(user.password)
+        user_data["hashed_password"] = hashed_password
+
+        # Insert into MongoDB
         await user_collection.insert_one(user_data)
+
+        # Remove hashed_password before returning
+        user_data.pop("hashed_password", None)
+
         return UserOut(**user_data)
 
     except HTTPException:
@@ -131,17 +133,21 @@ async def signup(user: UserCreate):
             detail="Registration failed"
         )
 
-
+# Authentication function remains unchanged
 async def authenticate_user(email: str, password: str):
+    """Authenticate user credentials"""
     try:
         user_collection = get_user_collection()
         user = await user_collection.find_one({"email": email})
-        if not user or not verify_password(password, user["hashed_password"]):
+        
+        if not user or not verify_password(password, user.get("hashed_password", "")):
             return None
+            
         return user
     except Exception as e:
         logger.error(f"Authentication error: {str(e)}")
         return None
+
 
 @router.post("/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):

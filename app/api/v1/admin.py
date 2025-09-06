@@ -75,15 +75,21 @@ async def users_summary_full(page: int = 1, limit: int = 50, current_admin: dict
     }
 
 # Create User
+
+# Create User
 @router.post("/users", response_model=UserOut)
 async def create_user(user: UserCreate, current_admin: dict = Depends(get_current_admin_user)):
     users = get_user_collection()
     user_dict = user.dict()
-    user_dict["created_at"] = datetime.utcnow()
+    now = datetime.utcnow()
+    user_dict.update({
+        "created_at": now,
+        "updated_at": now,
+        "is_active": True  # <- ensure the field exists
+    })
     result = await users.insert_one(user_dict)
     user_dict["_id"] = str(result.inserted_id)
     return user_dict
-
 # Read User by ID
 @router.get("/users/{user_id}", response_model=UserOut)
 async def get_user(user_id: str, current_admin: dict = Depends(get_current_admin_user)):
@@ -146,11 +152,18 @@ async def artworks_summary_full(page: int = 1, limit: int = 50, current_admin: d
     }
 
 # Create Artwork
+# Create Artwork
 @router.post("/artworks")
 async def create_artwork(artwork: ArtworkCreate, current_admin: dict = Depends(get_current_admin_user)):
     artworks = get_artwork_collection()
     artwork_dict = artwork.dict()
+    
+    # Set default status if not provided
+    artwork_dict.setdefault("status", "pending")
+    
     artwork_dict["created_at"] = datetime.utcnow()
+    artwork_dict["updated_at"] = datetime.utcnow()
+    
     result = await artworks.insert_one(artwork_dict)
     artwork_dict["_id"] = str(result.inserted_id)
     return artwork_dict

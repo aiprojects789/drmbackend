@@ -10,39 +10,25 @@ from web3 import Web3
 import uuid
 import logging
 
+class UserRole(str, Enum):
+    ARTIST = "artist"
+    ADMIN = "admin"
+    USER = "user"
+
 
 class UserBase(BaseModel):
-    wallet_address: str = Field(..., min_length=42, max_length=42)
-    email: Optional[str] = None 
-    created_at: Optional[datetime] = None  # Make optional
-    updated_at: Optional[datetime] = None  # Make optional
-    
-    username: Optional[str] = Field(None, min_length=3, max_length=50)
-    is_verified: bool = False
-    profile_image: Optional[str] = None
-    bio: Optional[str] = Field(None, max_length=500)
-
-    @field_validator('created_at', 'updated_at', mode='before')
-    def parse_datetime(cls, v):
-        if v is None:
-            return None
-        if isinstance(v, datetime):
-            return v
-        try:
-            return datetime.fromisoformat(str(v))
-        except (TypeError, ValueError):
-            return None
-    
-    @validator('wallet_address')
-    def validate_wallet_address(cls, v):
-        try:
-            return Web3.to_checksum_address(v)
-        except ValueError:
-            raise ValueError("Invalid Ethereum address")
+    email: EmailStr = Field(description="Used for authentication")
+    username: Annotated[str, StringConstraints(
+        min_length=3, 
+        max_length=50, 
+        pattern=r"^[a-zA-Z0-9_]+$"
+    )] = Field(description="Public display name")
+    full_name: Optional[str] = Field(None, max_length=100)
+    role: UserRole = Field(default=UserRole.ARTIST)
 
     model_config = ConfigDict(
-        populate_by_name=True,
-        arbitrary_types_allowed=True
+        populate_by_name=True,  # Replaces allow_population_by_field_name
+        str_strip_whitespace=True
     )
 
 class UserPublic(UserBase):
@@ -81,10 +67,8 @@ class UserEmailRequest(BaseModel):
 
 
 class UserCreate(UserBase):
-    wallet_address: str
     password: str = Field(..., min_length=8)
-    full_name: str
-    
+
 
 class UserInDB(UserBase):
     id: str = Field(..., alias="_id")
@@ -99,7 +83,7 @@ class UserOut(BaseModel):
     email: EmailStr
     username: str
     full_name: Optional[str]
-    role: Optional[str] = None
+    role: UserRole
     is_active: bool
     created_at: datetime
     updated_at: datetime
