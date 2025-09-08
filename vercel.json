@@ -1,11 +1,15 @@
 {
   "version": 2,
-  "buildCommand": "pip install -r requirements.txt",
-  "framework": null,
+  "builds": [
+    {
+      "src": "api/index.js",
+      "use": "@vercel/node"
+    }
+  ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "main.py"
+      "dest": "/api/index.js"
     }
   ]
 }
