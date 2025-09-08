@@ -1,20 +1,11 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "api/index.py",
-      "use": "@vercel/python",
-      "config": {
-        "runtime": "python3.9",
-        "maxLambdaSize": "15mb",
-        "includeFiles": "app/**"
-      }
-    }
-  ],
+  "buildCommand": "pip install -r requirements.txt",
+  "framework": null,
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "api/index.py"
+      "dest": "main.py"
     }
   ]
 }
