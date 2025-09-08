@@ -1,7 +1,11 @@
 {
   "version": 2,
-  "buildCommand": "pip install -r requirements.txt",
-  "framework": null,
+  "builds": [
+    {
+      "src": "main.py",
+      "use": "@vercel/python"
+    }
+  ],
   "routes": [
     {
       "src": "/(.*)",
@@ -9,3 +13,4 @@
     }
   ]
 }
+  

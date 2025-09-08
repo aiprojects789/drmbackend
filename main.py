@@ -1,8 +1,9 @@
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from app.db.database import connect_to_mongo, close_mongo_connection
+from mangum import Mangum
 import os
 import logging
 import traceback
@@ -70,3 +71,15 @@ async def error_handler(request: Request, call_next):
             status_code=500,
             content={"detail": "Internal server error"}
         )
+
+# ---------------- Env Test ----------------
+@app.get("/env-test")
+async def env_test():
+    return {
+        "JWT_SECRET_KEY": os.getenv("JWT_SECRET_KEY"),
+        "MONGODB_URI": os.getenv("MONGODB_URI"),
+        "DB_NAME": os.getenv("DB_NAME"),
+    }
+
+# ---------------- Mangum handler for Vercel ----------------
+handler = Mangum(app)
