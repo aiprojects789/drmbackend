@@ -6,14 +6,17 @@ from app.db.database import connect_to_mongo, close_mongo_connection
 import os
 import logging
 import traceback
+from mangum import Mangum  # <-- Add this
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="ART_DRM Backend",
+    version="1.0.0",
     description="Digital Rights Management for Artworks",
-    version="1.0.0"
+    docs_url="/docs",      # Swagger UI
+    redoc_url="/redoc"     # Optional
 )
 
 # ---------------- CORS ----------------
@@ -73,3 +76,6 @@ async def error_handler(request: Request, call_next):
             status_code=500,
             content={"detail": "Internal server error"}
         )
+
+# ---------------- Mangum Handler for Vercel ----------------
+handler = Mangum(app)
