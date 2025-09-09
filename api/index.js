@@ -49,8 +49,7 @@ module.exports = (req, res) => {
             presets: [
                 SwaggerUIBundle.presets.apis,
                 SwaggerUIBundle.presets.standalone
-            ],
-            layout: "StandaloneLayout"
+            ]
         });
     </script>
 </body>
