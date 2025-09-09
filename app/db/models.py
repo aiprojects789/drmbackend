@@ -15,7 +15,6 @@ class UserRole(str, Enum):
     ADMIN = "admin"
     USER = "user"
 
-
 class UserBase(BaseModel):
     email: EmailStr = Field(description="Used for authentication")
     username: Annotated[str, StringConstraints(
@@ -25,11 +24,6 @@ class UserBase(BaseModel):
     )] = Field(description="Public display name")
     full_name: Optional[str] = Field(None, max_length=100)
     role: UserRole = Field(default=UserRole.ARTIST)
-
-    model_config = ConfigDict(
-        populate_by_name=True,  # Replaces allow_population_by_field_name
-        str_strip_whitespace=True
-    )
 
 class UserPublic(UserBase):
     """Public user model with string ID and timestamps"""
@@ -53,10 +47,6 @@ class User(UserPublic):
 class WalletConnectRequest(BaseModel):
     wallet_address: str
 
-class UserRole(str, Enum):
-    ARTIST = "artist"
-    ADMIN = "admin"
-    USER = "user"
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
@@ -69,6 +59,7 @@ class UserEmailRequest(BaseModel):
 class UserCreate(UserBase):
     password: str = Field(..., min_length=8)
 
+    
 
 class UserInDB(UserBase):
     id: str = Field(..., alias="_id")
@@ -83,7 +74,7 @@ class UserOut(BaseModel):
     email: EmailStr
     username: str
     full_name: Optional[str]
-    role: UserRole
+    role: Optional[str] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime

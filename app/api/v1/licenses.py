@@ -160,14 +160,24 @@ async def grant_license_with_document(
         if not artwork_doc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artwork not found")
 
-        if artwork_doc["owner_address"].lower() != current_user.wallet_address.lower():
+        # FIX: Handle current_user as dict
+        user_wallet = None
+        if hasattr(current_user, 'wallet_address'):
+            user_wallet = current_user.wallet_address
+        elif isinstance(current_user, dict) and 'wallet_address' in current_user:
+            user_wallet = current_user['wallet_address']
+        else:
+            logger.error(f"Invalid current_user structure: {current_user}")
+            raise HTTPException(status_code=500, detail="User authentication error")
+
+        if artwork_doc["owner_address"].lower() != user_wallet.lower():
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only artwork owner can grant licenses")
 
         start_date = datetime.utcnow()
         license_document = LicenseDocumentService.generate_license_document(
             artwork_title=artwork_doc.get("title", "Untitled"),
             artwork_token_id=token_id,
-            licensor_address=current_user.wallet_address,
+            licensor_address=user_wallet,
             licensee_address=licensee_address,
             license_type=license_type,
             duration_days=duration_days,
@@ -194,7 +204,7 @@ async def grant_license_with_document(
                     duration_days,
                     terms_hash,
                     license_type,
-                    current_user.wallet_address
+                    user_wallet
                 )
                 break
             except Exception as e:
@@ -213,7 +223,7 @@ async def grant_license_with_document(
             "license_id": license_count,
             "token_id": token_id,
             "licensee_address": licensee_address.lower(),
-            "licensor_address": current_user.wallet_address.lower(),
+            "licensor_address": user_wallet.lower(),
             "start_date": start_date,
             "end_date": end_date,
             "terms_hash": terms_hash,
@@ -345,7 +355,17 @@ async def revoke_license(
 
         license_obj = LicenseInDB.from_mongo(license_doc)
 
-        if license_obj.licensor_address.lower() != current_user.wallet_address.lower():
+        # FIX: Handle current_user as dict (same fix as grant endpoint)
+        user_wallet = None
+        if hasattr(current_user, 'wallet_address'):
+            user_wallet = current_user.wallet_address
+        elif isinstance(current_user, dict) and 'wallet_address' in current_user:
+            user_wallet = current_user['wallet_address']
+        else:
+            logger.error(f"Invalid current_user structure in revoke: {current_user}")
+            raise HTTPException(status_code=500, detail="User authentication error")
+
+        if license_obj.licensor_address.lower() != user_wallet.lower():
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only licensor can revoke license")
 
         if not license_obj.is_active:
@@ -376,7 +396,7 @@ async def revoke_license(
             {"$set": {"is_licensed": active_licenses > 0, "updated_at": datetime.utcnow()}}
         )
 
-        logger.info(f"Successfully revoked license {license_id} for user {current_user.wallet_address}")
+        logger.info(f"Successfully revoked license {license_id} for user {user_wallet}")
 
         return {
             "success": True,
@@ -390,7 +410,6 @@ async def revoke_license(
     except Exception as e:
         logger.error(f"Error revoking license {license_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to revoke license: {str(e)}")
-
 
 @router.get("/", response_model=LicenseListResponse)
 async def list_licenses(

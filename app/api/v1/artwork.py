@@ -55,11 +55,180 @@ class ImageProcessor:
 
 # ✅ IPFS Upload Service
 class IPFSService:
+    """Service class to handle IPFS uploads with multiple providers"""
+    
     @staticmethod
-    async def upload_to_ipfs(file_data: bytes, filename: str) -> str:
-        """Stub for IPFS upload (Pinata/NFT.Storage/Web3.Storage)"""
-        # Just demo: always return dummy URI
-        return f"ipfs://demo/{filename}"
+    async def upload_to_pinata(file_data: bytes, filename: str) -> str:
+        """Upload to Pinata.cloud with proper error handling"""
+        try:
+            pinata_api_key = settings.PINATA_API_KEY
+            pinata_secret_api_key = settings.PINATA_SECRET_API_KEY
+            
+            if not pinata_api_key or not pinata_secret_api_key:
+                raise Exception("Pinata API credentials not configured")
+            
+            # For larger files, use the pinFileToIPFS endpoint which handles chunking
+            form_data = aiohttp.FormData()
+            form_data.add_field('file', file_data, filename=filename)
+            
+            headers = {
+                'pinata_api_key': pinata_api_key,
+                'pinata_secret_api_key': pinata_secret_api_key,
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    'https://api.pinata.cloud/pinning/pinFileToIPFS',
+                    headers=headers,
+                    data=form_data
+                ) as response:
+                    # Check if response is JSON
+                    content_type = response.headers.get('Content-Type', '')
+                    response_text = await response.text()
+                    
+                    if 'application/json' in content_type:
+                        result = await response.json()
+                        if response.status == 200:
+                            return f"ipfs://{result['IpfsHash']}"
+                        else:
+                            error_msg = result.get('error', {}).get('message', 'Unknown error')
+                            raise Exception(f"Pinata error: {error_msg}")
+                    else:
+                        # Handle non-JSON responses (usually errors)
+                        if response.status == 401:
+                            raise Exception("Pinata authentication failed - check API keys")
+                        elif response.status == 403:
+                            raise Exception("Pinata access denied - check API permissions")
+                        elif response.status == 413:
+                            raise Exception("Pinata file too large - try smaller image")
+                        else:
+                            raise Exception(f"Pinata error: HTTP {response.status} - {response_text[:200]}")
+                        
+        except Exception as e:
+            logger.error(f"Pinata upload failed: {str(e)}")
+            raise
+
+    @staticmethod
+    async def upload_to_nft_storage(file_data: bytes, filename: str) -> str:
+        """Upload to NFT.Storage - better for larger files"""
+        try:
+            nft_storage_key = settings.NFT_STORAGE_API_KEY
+            if not nft_storage_key:
+                raise Exception("NFT.Storage API key not configured")
+            
+            headers = {
+                'Authorization': f'Bearer {nft_storage_key}',
+            }
+            
+            # Create FormData for better handling
+            form_data = aiohttp.FormData()
+            form_data.add_field('file', file_data, filename=filename)
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    'https://api.nft.storage/upload',
+                    headers=headers,
+                    data=form_data
+                ) as response:
+                    content_type = response.headers.get('Content-Type', '')
+                    response_text = await response.text()
+                    
+                    if 'application/json' in content_type:
+                        result = await response.json()
+                        if response.status == 200 and result.get('ok'):
+                            return f"ipfs://{result['value']['cid']}"
+                        else:
+                            error_msg = result.get('error', {}).get('message', 'Unknown error')
+                            raise Exception(f"NFT.Storage error: {error_msg}")
+                    else:
+                        if response.status == 401:
+                            raise Exception("NFT.Storage authentication failed - check API key")
+                        else:
+                            raise Exception(f"NFT.Storage error: HTTP {response.status} - {response_text[:200]}")
+                        
+        except Exception as e:
+            logger.error(f"NFT.Storage upload failed: {str(e)}")
+            raise
+
+    @staticmethod
+    async def upload_to_web3_storage(file_data: bytes, filename: str) -> str:
+        """Upload to Web3.Storage"""
+        try:
+            web3_storage_key = settings.WEB3_STORAGE_API_KEY
+            if not web3_storage_key:
+                raise Exception("Web3.Storage API key not configured")
+            
+            headers = {
+                'Authorization': f'Bearer {web3_storage_key}',
+                'X-Name': filename,
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    'https://api.web3.storage/upload',
+                    headers=headers,
+                    data=file_data
+                ) as response:
+                    content_type = response.headers.get('Content-Type', '')
+                    response_text = await response.text()
+                    
+                    if 'application/json' in content_type:
+                        result = await response.json()
+                        if response.status == 200:
+                            return f"ipfs://{result['cid']}"
+                        else:
+                            error_msg = result.get('error', 'Unknown error')
+                            raise Exception(f"Web3.Storage error: {error_msg}")
+                    else:
+                        if response.status == 401:
+                            raise Exception("Web3.Storage authentication failed - check API key")
+                        else:
+                            raise Exception(f"Web3.Storage error: HTTP {response.status} - {response_text[:200]}")
+                        
+        except Exception as e:
+            logger.error(f"Web3.Storage upload failed: {str(e)}")
+            raise
+
+    @staticmethod
+    async def upload_to_ipfs(file_data: bytes, filename: str, max_retries: int = 2) -> str:
+        """Main upload method that tries multiple providers with retries"""
+        providers = []
+        
+        # Check which providers are configured
+        if settings.PINATA_API_KEY and settings.PINATA_SECRET_API_KEY:
+            providers.append(("Pinata", IPFSService.upload_to_pinata))
+        
+        if settings.NFT_STORAGE_API_KEY:
+            providers.append(("NFT.Storage", IPFSService.upload_to_nft_storage))
+        
+        if settings.WEB3_STORAGE_API_KEY:
+            providers.append(("Web3.Storage", IPFSService.upload_to_web3_storage))
+        
+        if not providers:
+            raise Exception("No IPFS providers configured. Please set up at least one IPFS service.")
+        
+        errors = []
+        
+        # Try each provider with retries
+        for provider_name, provider_func in providers:
+            for attempt in range(max_retries):
+                try:
+                    logger.info(f"Trying {provider_name} (attempt {attempt + 1})...")
+                    result = await provider_func(file_data, filename)
+                    logger.info(f"Successfully uploaded to IPFS using {provider_name}: {result}")
+                    return result
+                except Exception as e:
+                    error_msg = f"{provider_name} attempt {attempt + 1} failed: {str(e)}"
+                    errors.append(error_msg)
+                    logger.warning(error_msg)
+                    
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1)  # Wait before retry
+        
+        # If all providers failed, log detailed errors
+        detailed_error = "All IPFS providers failed:\n" + "\n".join(errors)
+        logger.error(detailed_error)
+        raise Exception("All IPFS providers failed. Check API keys and network connectivity.")
 
 
 # ✅ Register artwork with image
@@ -163,8 +332,13 @@ async def list_artworks(
     try:
         artworks_collection = get_artwork_collection()
 
-        # Build filter query
-        filter_query = {}
+        # Build filter query - only include valid artworks
+        filter_query = {
+            "token_id": {"$ne": None, "$exists": True},
+            "creator_address": {"$ne": None, "$exists": True},
+            "owner_address": {"$ne": None, "$exists": True}
+        }
+        
         if creator_address:
             filter_query["creator_address"] = creator_address.lower()
         if owner_address:
@@ -185,15 +359,22 @@ async def list_artworks(
         artworks = []
         for doc in artworks_data:
             try:
-                # Validate MongoDB document
-                db_model = ArtworkInDB.model_validate(doc)
-
-                # Dump with alias (id instead of _id)
-                data = db_model.model_dump(by_alias=True)
-                logger.debug(f"Model dump data: {data}")
-
-                # Convert into public response model
-                artworks.append(ArtworkPublic(**data))
+                # Use a more flexible approach for validation
+                artwork_public = ArtworkPublic(
+                    id=str(doc.get("_id", "")),
+                    token_id=doc.get("token_id"),
+                    creator_address=doc.get("creator_address"),
+                    owner_address=doc.get("owner_address"),
+                    metadata_uri=doc.get("metadata_uri", ""),
+                    royalty_percentage=doc.get("royalty_percentage", 0),
+                    is_licensed=doc.get("is_licensed", False),
+                    title=doc.get("title", "Untitled"),
+                    description=doc.get("description", ""),
+                    attributes=doc.get("attributes", {}),
+                    created_at=doc.get("created_at", datetime.utcnow()),
+                    updated_at=doc.get("updated_at", datetime.utcnow())
+                )
+                artworks.append(artwork_public)
             except Exception as e:
                 logger.warning(f"Skipping invalid artwork: {e} | Raw doc: {doc}")
                 continue

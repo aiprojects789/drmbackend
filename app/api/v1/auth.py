@@ -30,6 +30,64 @@ otp_store = {}  # In-memory OTP store
 # OAuth2 scheme for token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
+# ---------------- CONNECT WALLET ----------------
+# def get_user_email(current_user: dict) -> str:
+#     return current_user.get("email") or current_user.get("sub")
+
+
+
+
+# Update your login endpoint in your auth router:
+
+@router.post("/login", response_model=Token)
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = await authenticate_user(form_data.username, form_data.password)
+    if not user:
+        logger.warning(f"Failed login attempt for email: {form_data.username}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Create token data
+    token_data = {
+        "sub": user["email"],
+        "user_id": str(user["_id"]),
+        "wallet_address": user.get("wallet_address", ""),
+        "role": user["role"]
+    }
+    
+    logger.debug(f"Creating token for user: {user['email']}")
+    logger.debug(f"Token data: {token_data}")
+
+    # Create access token with expiration
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data=token_data,
+        expires_delta=access_token_expires
+    )
+
+    # Validate the token was created properly
+    if not access_token or len(access_token.split('.')) != 3:
+        logger.error("Failed to create valid JWT token")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Authentication token creation failed"
+        )
+
+    logger.info(f"User logged in successfully: {user['email']} with role: {user['role']}")
+    
+    # Return token and user info for frontend compatibility
+    return {
+        "access_token": access_token, 
+        "token_type": "bearer",
+        "user_id": str(user["_id"]),
+        "email": user["email"],
+        "role": user["role"],
+        "wallet_address": user.get("wallet_address", ""),
+        "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60  # in seconds
+    }
 
 
 @router.post("/connect-wallet", response_model=Token)
@@ -37,7 +95,6 @@ async def connect_wallet(payload: WalletConnectRequest, current_user: dict = Dep
     wallet_address = payload.wallet_address
     if not wallet_address:
         raise HTTPException(status_code=400, detail="Wallet address is required")
-
     
     # Safely get user's email
     user_email = current_user.get("email") or current_user.get("sub")
@@ -46,6 +103,14 @@ async def connect_wallet(payload: WalletConnectRequest, current_user: dict = Dep
 
     await connect_to_mongo()
     user_collection = get_user_collection()
+    
+    # Check if wallet is already connected to another account
+    existing_wallet_user = await user_collection.find_one({"wallet_address": wallet_address})
+    if existing_wallet_user and existing_wallet_user["email"] != user_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This wallet is already connected to another account"
+        )
     
     # Update wallet address in MongoDB
     result = await user_collection.update_one(
@@ -56,34 +121,39 @@ async def connect_wallet(payload: WalletConnectRequest, current_user: dict = Dep
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Create a new JWT for this user
+    # Get updated user data
+    updated_user = await user_collection.find_one({"email": user_email})
+    
+    # Create a new JWT with updated wallet info
     access_token_expires = timedelta(hours=24)
     access_token = create_access_token(
         data={
             "sub": user_email,
-            "user_id": str(current_user.get("_id", "")),
+            "user_id": str(updated_user.get("_id", "")),
             "wallet_address": wallet_address,
-            "role": current_user.get("role", "user")
+            "role": updated_user.get("role", "user")
         },
         expires_delta=access_token_expires
     )
+
+    logger.info(f"Wallet {wallet_address} connected to user: {user_email}")
 
     return {
         "access_token": access_token,
         "token_type": "bearer",
         "user": {
-            "id": str(current_user.get("_id", "")),
-            "wallet_address": wallet_address,
+            "id": str(updated_user.get("_id", "")),
             "email": user_email,
-            "username": current_user.get("username", ""),
-            "is_verified": current_user.get("is_verified", False),
-            "profile_image": current_user.get("profile_image", ""),
-            "bio": current_user.get("bio", ""),
-            "created_at": current_user.get("created_at"),
+            "username": updated_user.get("username", ""),
+            "wallet_address": wallet_address,
+            "is_verified": updated_user.get("is_verified", False),
+            "profile_image": updated_user.get("profile_image", ""),
+            "bio": updated_user.get("bio", ""),
+            "role": updated_user.get("role", "user"),
+            "created_at": updated_user.get("created_at"),
             "updated_at": datetime.utcnow()
         }
     }
-
 
 @router.post("/signup", response_model=UserOut)
 async def signup(user: UserCreate):
@@ -149,29 +219,6 @@ async def authenticate_user(email: str, password: str):
         return None
 
 
-@router.post("/login", response_model=Token)
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = await authenticate_user(form_data.username, form_data.password)
-    if not user:
-        logger.warning(f"Failed login attempt for email: {form_data.username}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    # Include role in token data
-    access_token = create_access_token(
-        data={
-            "sub": user["email"],
-            "user_id": str(user["_id"]),
-            "wallet_address": user.get("wallet_address", ""),
-            "role": user["role"]  # Include role in token
-        }
-    )
-
-    logger.info(f"User logged in: {user['email']} with role: {user['role']}")
-    return {"access_token": access_token, "token_type": "bearer"}
 
 # Dependency to get current admin user
 async def get_current_admin_user(current_user: dict = Depends(get_current_user)):
@@ -182,6 +229,23 @@ async def get_current_admin_user(current_user: dict = Depends(get_current_user))
             detail="Access denied. Admin privileges required.",
         )
     return current_user
+
+
+# Create User
+@router.post("/users", response_model=UserOut)
+async def create_user(user: UserCreate, current_admin: dict = Depends(get_current_admin_user)):
+    users = get_user_collection()
+    user_dict = user.dict()
+    now = datetime.utcnow()
+    user_dict.update({
+        "created_at": now,
+        "updated_at": now,
+        "is_active": True  # <- ensure the field exists
+        })
+    result = await users.insert_one(user_dict)
+    user_dict["_id"] = str(result.inserted_id)
+    return user_dict
+
 
 # Admin-only route to get all users
 @router.get("/admin/users")

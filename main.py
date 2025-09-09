@@ -6,16 +6,18 @@ from app.db.database import connect_to_mongo, close_mongo_connection
 import os
 import logging
 import traceback
-from mangum import Mangum  # <-- Add this
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
+    # title="ART_DRM Backend",
+    # description="Digital Rights Management for Artworks",
+    # version="1.0.0"
     title="ART_DRM Backend",
     version="1.0.0",
     description="Digital Rights Management for Artworks",
-    docs_url="/docs",      # Swagger UI
+    docs_url="/docs",      # Swagger UI ke liye
     redoc_url="/redoc"     # Optional
 )
 
@@ -43,10 +45,6 @@ try:
     app.include_router(api_router, prefix="/api/v1")
 except Exception as e:
     logger.error(f"API Router import error: {e}")
-
-# ---------------- Static Files ----------------
-if os.path.isdir("uploads"):
-    app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # ---------------- Database Events ----------------
 @app.on_event("startup")
@@ -76,6 +74,3 @@ async def error_handler(request: Request, call_next):
             status_code=500,
             content={"detail": "Internal server error"}
         )
-
-# ---------------- Mangum Handler for Vercel ----------------
-handler = Mangum(app)

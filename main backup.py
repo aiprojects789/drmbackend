@@ -108,7 +108,3 @@ async def shutdown_db():
 
 
 app = create_app()
-
-from fastapi.staticfiles import StaticFiles
-
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
