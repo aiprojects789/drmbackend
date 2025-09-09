@@ -56,7 +56,10 @@ async def startup_db():
 
 @app.on_event("shutdown")
 async def shutdown_db():
-    await close_mongo_connection()
+    try:
+        await close_mongo_connection()
+    except Exception as e:
+        logger.error(f"Error during shutdown: {e}")
 
 # ---------------- Error Handling ----------------
 @app.middleware("http")
