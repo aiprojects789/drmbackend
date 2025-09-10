@@ -89,6 +89,15 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60  # in seconds
     }
 
+@router.get("/test-pass")
+async def test_pass():
+    plain = "stringst"  # test password
+    hashed = get_password_hash(plain)
+    return {
+        "plain": plain,
+        "hashed": hashed,
+        "verify": verify_password(plain, hashed)
+    }
 
 @router.post("/connect-wallet", response_model=Token)
 async def connect_wallet(payload: WalletConnectRequest, current_user: dict = Depends(get_current_user)):

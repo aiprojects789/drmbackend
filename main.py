@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from app.db.database import connect_to_mongo, close_mongo_connection
+from app.db.database import connect_to_mongo
 import os
 import logging
 import traceback
@@ -55,12 +55,12 @@ async def startup_db():
     except Exception as e:
         logger.critical(f"Failed to connect MongoDB: {e}")
 
-@app.on_event("shutdown")
-async def shutdown_db():
-    try:
-        await close_mongo_connection()
-    except Exception as e:
-        logger.error(f"Error during shutdown: {e}")
+# @app.on_event("shutdown")
+# async def shutdown_db():
+#     try:
+#         await close_mongo_connection()
+#     except Exception as e:
+#         logger.error(f"Error during shutdown: {e}")
 
 # ---------------- Error Handling ----------------
 @app.middleware("http")
