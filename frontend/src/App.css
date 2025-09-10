@@ -1,0 +1,17 @@
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background: #f9f9f9;
+}
+
+h1 {
+  color: #222;
+}
+
+p {
+  color: #555;
+}
+
+#paypal-button-container {
+  margin-top: 20px;
+}

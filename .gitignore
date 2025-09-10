@@ -1,0 +1,25 @@
+venv/
+.env/
+env
+.venv/
+
+__pycache__/
+*.pyc
+
+
+
+# --------------------
+# Node / React
+# --------------------
+node_modules/
+build/
+dist/
+.cache/
+.next/
+out/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+package-lock.json
+yarn.lock
