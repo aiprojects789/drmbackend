@@ -1,13 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from app.db.database import get_artwork_collection,get_user_collection, connect_to_mongo,get_db
-from datetime import datetime,timedelta
+from fastapi import APIRouter, Depends, HTTPException
+from app.db.database import get_artwork_collection, get_user_collection
+from datetime import datetime, timedelta
 from app.db.models import UserCreate, UserOut, UserUpdate, ArtworkCreate
-from app.core.security import get_current_admin_user, get_password_hash  # Import the admin user dependency
+from app.core.security import get_current_admin_user, get_password_hash
 from bson import ObjectId
-from pydantic import BaseModel
 from bson.errors import InvalidId
-
 import logging
+
 router = APIRouter(
     tags=["Admin"],
     prefix="/admin"
@@ -15,11 +14,13 @@ router = APIRouter(
 
 logger = logging.getLogger(__name__)
 
+# --------------------- Flagged Artworks ---------------------
 @router.get("/flagged-artworks")
 async def get_flagged_artworks(current_admin: dict = Depends(get_current_admin_user)):
     """Get all flagged artworks (admin only)"""
     return {"artworks": []}  # Placeholder
 
+# --------------------- Users Summary ---------------------
 @router.get("/users/summary-full")
 async def users_summary_full(page: int = 1, limit: int = 50, current_admin: dict = Depends(get_current_admin_user)):
     users_collection = get_user_collection()
@@ -27,7 +28,6 @@ async def users_summary_full(page: int = 1, limit: int = 50, current_admin: dict
     total_users = await users_collection.count_documents({})
     active_users = await users_collection.count_documents({"is_active": True})
 
-    # Get admin users and serialize ObjectId
     raw_admin_users = await users_collection.find({"role": "admin"}, {"hashed_password": 0}).to_list(length=None)
     admin_users = [
         {
@@ -67,59 +67,64 @@ async def users_summary_full(page: int = 1, limit: int = 50, current_admin: dict
         "active_users": active_users,
         "new_users_this_week": new_users_this_week,
         "users": users_list,
-        "admin_users": admin_users,  # Already serialized
+        "admin_users": admin_users,
         "pagination": {
             "current_page": page,
             "per_page": limit
         }
     }
 
-# Create User
-
-# Create User
+# --------------------- User CRUD ---------------------
 @router.post("/users", response_model=UserOut)
 async def create_user(user: UserCreate, current_admin: dict = Depends(get_current_admin_user)):
-    users = get_user_collection()
+    users_collection = get_user_collection()
     user_dict = user.dict()
     now = datetime.utcnow()
     user_dict.update({
         "created_at": now,
         "updated_at": now,
-        "is_active": True  # <- ensure the field exists
+        "is_active": True
     })
-    result = await users.insert_one(user_dict)
+    result = await users_collection.insert_one(user_dict)
     user_dict["_id"] = str(result.inserted_id)
     return user_dict
-# Read User by ID
+
 @router.get("/users/{user_id}", response_model=UserOut)
 async def get_user(user_id: str, current_admin: dict = Depends(get_current_admin_user)):
-    users = get_user_collection()
-    user = await users.find_one({"_id": ObjectId(user_id)})
+    users_collection = get_user_collection()
+    try:
+        user = await users_collection.find_one({"_id": ObjectId(user_id)})
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid user ID")
     if not user:
-        raise HTTPException(404, "User  not found")
+        raise HTTPException(404, "User not found")
     user["_id"] = str(user["_id"])
     return user
 
-# Update User
 @router.put("/users/{user_id}")
 async def update_user(user_id: str, user: UserUpdate, current_admin: dict = Depends(get_current_admin_user)):
-    users = get_user_collection()
+    users_collection = get_user_collection()
     update_data = {k: v for k, v in user.dict().items() if v is not None}
-    result = await users.update_one({"_id": ObjectId(user_id)}, {"$set": update_data})
+    try:
+        result = await users_collection.update_one({"_id": ObjectId(user_id)}, {"$set": update_data})
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid user ID")
     if result.matched_count == 0:
-        raise HTTPException(404, "User  not found")
-    return {"message": "User  updated successfully"}
+        raise HTTPException(404, "User not found")
+    return {"message": "User updated successfully"}
 
-# Delete User
 @router.delete("/users/{user_id}")
 async def delete_user(user_id: str, current_admin: dict = Depends(get_current_admin_user)):
     users_collection = get_user_collection()
-    result = await users_collection.delete_one({"_id": ObjectId(user_id)})
+    try:
+        result = await users_collection.delete_one({"_id": ObjectId(user_id)})
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid user ID")
     if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="User  not found")
-    return {"message": "User  deleted successfully"}
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"message": "User deleted successfully"}
 
-# --- Same structure for artworks ---
+# --------------------- Artworks Summary ---------------------
 @router.get("/artworks/summary-full")
 async def artworks_summary_full(page: int = 1, limit: int = 50, current_admin: dict = Depends(get_current_admin_user)):
     artworks_collection = get_artwork_collection()
@@ -151,79 +156,77 @@ async def artworks_summary_full(page: int = 1, limit: int = 50, current_admin: d
         }
     }
 
-# Create Artwork
-# Create Artwork
+# --------------------- Artwork CRUD ---------------------
 @router.post("/artworks")
 async def create_artwork(artwork: ArtworkCreate, current_admin: dict = Depends(get_current_admin_user)):
-    artworks = get_artwork_collection()
+    artworks_collection = get_artwork_collection()
     artwork_dict = artwork.dict()
-    
-    # Set default status if not provided
     artwork_dict.setdefault("status", "pending")
-    
     artwork_dict["created_at"] = datetime.utcnow()
     artwork_dict["updated_at"] = datetime.utcnow()
-    
-    result = await artworks.insert_one(artwork_dict)
+    result = await artworks_collection.insert_one(artwork_dict)
     artwork_dict["_id"] = str(result.inserted_id)
     return artwork_dict
 
-# Read Artwork by ID
 @router.get("/artworks/{artwork_id}")
 async def get_artwork(artwork_id: str, current_admin: dict = Depends(get_current_admin_user)):
-    artworks = get_artwork_collection()
-    artwork = await artworks.find_one({"_id": ObjectId(artwork_id)})
+    artworks_collection = get_artwork_collection()
+    try:
+        artwork = await artworks_collection.find_one({"_id": ObjectId(artwork_id)})
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid artwork ID")
     if not artwork:
         raise HTTPException(404, "Artwork not found")
     artwork["_id"] = str(artwork["_id"])
     return artwork
 
-# Update Artwork
 @router.put("/artworks/{artwork_id}")
 async def update_artwork(artwork_id: str, artwork: ArtworkCreate, current_admin: dict = Depends(get_current_admin_user)):
-    artworks = get_artwork_collection()
+    artworks_collection = get_artwork_collection()
     update_data = {k: v for k, v in artwork.dict().items() if v is not None}
-    result = await artworks.update_one({"_id": ObjectId(artwork_id)}, {"$set": update_data})
+    try:
+        result = await artworks_collection.update_one({"_id": ObjectId(artwork_id)}, {"$set": update_data})
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid artwork ID")
     if result.matched_count == 0:
         raise HTTPException(404, "Artwork not found")
     return {"message": "Artwork updated successfully"}
 
-# Delete Artwork
 @router.delete("/artworks/{artwork_id}")
 async def delete_artwork(artwork_id: str, current_admin: dict = Depends(get_current_admin_user)):
-    artworks = get_artwork_collection()
-    result = await artworks.delete_one({"_id": ObjectId(artwork_id)})
+    artworks_collection = get_artwork_collection()
+    try:
+        result = await artworks_collection.delete_one({"_id": ObjectId(artwork_id)})
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid artwork ID")
     if result.deleted_count == 0:
-        raise HTTPException(404, detail="Artwork not found")
+        raise HTTPException(404, "Artwork not found")
     return {"message": "Artwork deleted successfully"}
 
+# --------------------- Approve & Pending ---------------------
 @router.patch("/artworks/{artwork_id}/approve")
 async def approve_artwork(artwork_id: str, current_admin: dict = Depends(get_current_admin_user)):
     artworks_collection = get_artwork_collection()
-    
-    result = await artworks_collection.update_one(
-        {"_id": ObjectId(artwork_id)},
-        {"$set": {"status": "approved"}}
-    )
-    
+    try:
+        result = await artworks_collection.update_one(
+            {"_id": ObjectId(artwork_id)},
+            {"$set": {"status": "approved"}}
+        )
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid artwork ID")
     if result.modified_count == 0:
         raise HTTPException(status_code=404, detail="Artwork not found or already approved")
-    
     return {"message": "Artwork approved successfully"}
 
 @router.get("/artworks/status/pending")
 async def get_pending_artworks(current_admin: dict = Depends(get_current_admin_user)):
     artworks_collection = get_artwork_collection()
-    
-    pending_artworks = await artworks_collection.find(
-        {"status": "pending"}
-    ).to_list(length=None)
-    
+    pending_artworks = await artworks_collection.find({"status": "pending"}).to_list(length=None)
     return pending_artworks
 
+# --------------------- Create Admin ---------------------
 @router.post("/create-admin", response_model=UserOut)
 async def create_admin(user: UserCreate):
-    await connect_to_mongo()
     user_collection = get_user_collection()
 
     # Check if email exists
@@ -231,13 +234,13 @@ async def create_admin(user: UserCreate):
         raise HTTPException(status_code=400, detail="Email already registered")
 
     user_data = {
-         "_id": str(ObjectId()),
+        "_id": str(ObjectId()),
         "email": user.email,
         "username": user.username,
         "full_name": user.full_name,
         "hashed_password": get_password_hash(user.password),
         "is_active": True,
-        "role": "admin",  # fixed
+        "role": "admin",
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
         "wallet_address": None

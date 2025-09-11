@@ -1,14 +1,4 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1 import router as api_router
+from main import app
 
-app = FastAPI(title="ART_DRM Backend")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"]
-)
-
-app.include_router(api_router, prefix="/api/v1")
+# Minimal index file for Vercel deployment
+# FastAPI will use `app` as entry point
